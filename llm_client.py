@@ -36,7 +36,12 @@ class LLMClient:
 
                 text_to_stream = ""
 
-                reasoning_chunk = delta.reasoning_content or ""
+                # --- (关键 BUG 修复) ---
+                # 使用 getattr() 安全地访问 'reasoning_content'
+                # 如果该属性不存在 (例如在 Kimi, Baidu, Doubao上)，它将返回 None
+                reasoning_chunk = getattr(delta, 'reasoning_content', None) or ""
+                # --- (修复结束) ---
+
                 if reasoning_chunk:
                     text_to_stream = reasoning_chunk
 
