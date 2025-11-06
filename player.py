@@ -330,6 +330,8 @@ class Player:
                             observed_moods: str,
                             multiplier: int,
                             call_cost: int,
+                            table_seating_str: str,
+                            opponent_reference_str: str,
                             stream_start_cb: Callable[[str], Awaitable[None]],
                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
         """
@@ -358,7 +360,9 @@ class Player:
                 dealer_name=dealer_name,
                 observed_moods=observed_moods,
                 multiplier=multiplier,
-                call_cost=call_cost
+                call_cost=call_cost,
+                table_seating=table_seating_str,
+                opponent_reference=opponent_reference_str
             )
             messages = [{"role": "user", "content": prompt}]
 
