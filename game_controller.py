@@ -1,6 +1,7 @@
 import time
 import json
 import asyncio
+import random  # (新) 1. 导入 random (修复 Bug)
 from typing import List, Dict, Callable, Awaitable
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
@@ -10,7 +11,9 @@ from player import Player
 
 class GameController:
     """
-    (已修改：增加 'multiplier' (下注倍率) 传递)
+    (已修改：手牌排序和牌型评估)
+    (已修改：增加 'is_dealer' (庄家) 标记)
+    (已修改：增加 'mood' (情绪) 泄露机制)
     """
 
     def __init__(self,
@@ -115,10 +118,9 @@ class GameController:
                 break
 
     def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int) -> tuple:
-        """(新) 增加 multiplier 返回值"""
+        # (此函数无修改)
         st = game.state
         ps = st.players[player_id]
-
         state_summary_lines = [
             f"当前是 {self.players[st.current_player].name} 的回合。",
             f"底池 (Pot): {st.pot}", f"当前暗注 (Base Bet): {st.current_bet}",
@@ -136,7 +138,6 @@ class GameController:
             else:
                 status = "未看牌"
             state_summary_lines.append(f"  - {p_name}: 筹码={p.chips}, 状态={status}")
-
         my_hand = "你还未看牌。"
         if ps.looked:
             sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True)
@@ -146,24 +147,19 @@ class GameController:
                 my_hand = f"你的手牌是: {' '.join(hand_str_list)} (牌型: {hand_rank_obj.hand_type.name})"
             except Exception:
                 my_hand = f"你的手牌是: {' '.join(hand_str_list)} (牌型: 评估失败)"
-
         available_actions_tuples = []
         raw_actions = game.available_actions(player_id)
-        # (新) 我们需要 call_cost 来帮助 AI 计算
         call_cost = 0
         for act_type, display_cost in raw_actions:
             if act_type == ActionType.CALL:
-                call_cost = display_cost  # 捕获真实的跟注成本
+                call_cost = display_cost
             available_actions_tuples.append((act_type.name, display_cost))
-
         available_actions_str = "\n".join(
             f"  - {name}: 成本={cost}"
             for name, cost in available_actions_tuples
         )
-
         next_player_id = game.next_player(start_from=player_id)
         next_player_name = self.players[next_player_id].name
-
         reflection_lines = []
         for i, p in enumerate(self.players):
             if i == player_id: continue
@@ -174,7 +170,6 @@ class GameController:
             opponent_reflections_str = "暂无对手的过往人设信息。"
         else:
             opponent_reflections_str = "\n".join(reflection_lines)
-
         mood_lines = []
         for i, p in enumerate(self.players):
             if i == player_id: continue
@@ -185,15 +180,11 @@ class GameController:
             observed_moods_str = "暂未观察到对手的明显情绪。"
         else:
             observed_moods_str = "\n".join(mood_lines)
-
         min_raise_increment = st.config.min_raise
         dealer_name = self.players[start_player_id].name
-
-        # (新) 计算真实的倍率 (1=暗注, 2=明注)
         multiplier = 2 if ps.looked else 1
-
         return "\n".join(
-            state_summary_lines), my_hand, available_actions_str, available_actions_tuples, next_player_name, opponent_reflections_str, min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost  # <-- (新)
+            state_summary_lines), my_hand, available_actions_str, available_actions_tuples, next_player_name, opponent_reflections_str, min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost
 
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
@@ -275,7 +266,7 @@ class GameController:
              next_player_name, opponent_reflections_str,
              min_raise_increment, dealer_name,
              observed_moods_str, multiplier, call_cost) = self._build_llm_prompt(game, current_player_idx,
-                                                                                 start_player_id)  # (新)
+                                                                                 start_player_id)
 
             try:
                 action_json = await current_player_obj.decide_action(
@@ -284,8 +275,8 @@ class GameController:
                     min_raise_increment,
                     dealer_name,
                     observed_moods_str,
-                    multiplier,  # <-- (新) 传入倍率
-                    call_cost,  # <-- (新) 传入跟注成本
+                    multiplier,
+                    call_cost,
                     stream_start_cb=self.god_stream_start,
                     stream_chunk_cb=self.god_stream_chunk
                 )
