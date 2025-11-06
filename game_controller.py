@@ -223,6 +223,7 @@ class GameController:
             f"最后加注者: {self.players[st.last_raiser].name if st.last_raiser is not None else 'N/A'}"
         ]
         state_summary_lines.append("\n玩家信息:")
+        player_status_list: list[str] = []
         for i, p in enumerate(st.players):
             p_name = self.players[i].name
             if self.persistent_chips[i] <= 0:
@@ -233,7 +234,9 @@ class GameController:
                 status = "已看牌"
             else:
                 status = "未看牌"
-            state_summary_lines.append(f"  - {p_name}: 筹码={p.chips}, 状态={status}")
+            status_line = f"  - {p_name}: 筹码={p.chips}, 状态={status}"
+            state_summary_lines.append(status_line)
+            player_status_list.append(status)
 
         my_hand = "你还未看牌。"
         if ps.looked:
@@ -255,6 +258,41 @@ class GameController:
 
         next_player_id = game.next_player(start_from=player_id)
         next_player_name = self.players[next_player_id].name
+
+        seating_lines = []
+        opponent_reference_lines = []
+        for seat_offset in range(self.num_players):
+            seat_player_id = (start_player_id + seat_offset) % self.num_players
+            seat_player = self.players[seat_player_id]
+            seat_role_parts = [f"座位{seat_offset + 1}"]
+            if seat_offset == 0:
+                seat_role_parts.append("庄家")
+            if seat_player_id == player_id:
+                seat_role_parts.append("你")
+            relation_offset = (seat_player_id - player_id) % self.num_players
+            if relation_offset == 1:
+                relation_desc = "你的下家"
+            elif relation_offset == 0:
+                relation_desc = "你自己"
+            elif relation_offset == self.num_players - 1:
+                relation_desc = "你的上家"
+            else:
+                relation_desc = f"距离你 {relation_offset} 位"
+
+            seat_role = " / ".join(seat_role_parts)
+            status = player_status_list[seat_player_id] if seat_player_id < len(player_status_list) else "未知"
+            seat_chip_info = st.players[seat_player_id].chips if seat_player_id < len(st.players) else self.persistent_chips[seat_player_id]
+            seating_lines.append(
+                f"  - {seat_role}: {seat_player.name} (筹码={seat_chip_info}, 状态={status})"
+            )
+
+            if seat_player_id != player_id:
+                opponent_reference_lines.append(
+                    f"  - {seat_player.name}: 座位={seat_role}，相对位置={relation_desc}，筹码={seat_chip_info}，状态={status}"
+                )
+
+        table_seating_str = "\n".join(seating_lines)
+        opponent_reference_str = "\n".join(opponent_reference_lines) if opponent_reference_lines else "暂无其他对手。"
 
         player_obj = self.players[player_id]
         opponent_personas_lines = []
@@ -318,7 +356,8 @@ class GameController:
             next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
             opponent_private_impressions_str, observed_speech_str,
             received_secret_messages_str,
-            min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost
+            min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost,
+            table_seating_str, opponent_reference_str
         )
 
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
@@ -946,8 +985,9 @@ class GameController:
              opponent_private_impressions_str, observed_speech_str,
              received_secret_messages_str,
              min_raise_increment, dealer_name,
-             observed_moods_str, multiplier, call_cost) = self._build_llm_prompt(game, current_player_idx,
-                                                                                 start_player_id)
+             observed_moods_str, multiplier, call_cost,
+             table_seating_str, opponent_reference_str) = self._build_llm_prompt(game, current_player_idx,
+                                                                                start_player_id)
 
             try:
                 action_json = await current_player_obj.decide_action(
@@ -960,6 +1000,8 @@ class GameController:
                     observed_moods_str,
                     multiplier,
                     call_cost,
+                    table_seating_str,
+                    opponent_reference_str,
                     stream_start_cb=self.god_stream_start,
                     stream_chunk_cb=self.god_stream_chunk
                 )

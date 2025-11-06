@@ -12,6 +12,12 @@
 【当前局势】
 {game_state_summary}
 
+【座位顺序 (从庄家起顺时针)】
+{table_seating}
+
+【对手位置参考】
+{opponent_reference}
+
 【你的手牌】
 {my_hand}
 **(注意：如果你已看牌，系统会在此处自动为你评估牌型，例如 "牌型: PAIR")**
