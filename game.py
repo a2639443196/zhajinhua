@@ -195,6 +195,7 @@ class GameConfig:
     min_raise: int = 10  # 最小加注 (暗注)
     compare_cost_multiplier: int = 2  # 规则: 比牌费用是"当前单注"的两倍
     max_rounds: int = 100
+    base_bet_distribution: Optional[List[int]] = None
 
 
 @dataclass

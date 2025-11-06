@@ -20,10 +20,21 @@ class ZhajinhuaGame:
         for i in range(self.config.num_players):
             players.append(PlayerState(chips=current_chips[i]))
         pot = 0
-        for p in players:
-            if p.chips >= self.config.base_bet:
-                p.chips -= self.config.base_bet
-                pot += self.config.base_bet
+        base_bet_distribution = self.config.base_bet_distribution
+        if base_bet_distribution is not None:
+            if len(base_bet_distribution) != self.config.num_players:
+                raise ValueError("base_bet_distribution length must match num_players")
+            ante_distribution = list(base_bet_distribution)
+        else:
+            ante_distribution = [self.config.base_bet] * self.config.num_players
+
+        for idx, p in enumerate(players):
+            ante = ante_distribution[idx]
+            if ante <= 0:
+                continue
+            if p.chips >= ante:
+                p.chips -= ante
+                pot += ante
             else:
                 p.alive = False
                 p.all_in = True
