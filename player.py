@@ -27,6 +27,9 @@ class Player:
         self.persona_text: str = ""
         self.play_history: List[str] = []
         self.current_pressure: float = 0.0
+        self.cheat_attempts: int = 0
+        self.cheat_success: int = 0
+        self.mindgame_moves: int = 0
 
     # --- (新) 经验系统辅助常量 ---
     _EXPERIENCE_KEYWORDS: Dict[str, float] = {
@@ -69,20 +72,34 @@ class Player:
         if any(k in persona_text for k in self._DECEPTIVE_KEYWORDS):
             self.persona_tags.add("deceptive")
 
-        self.experience = max(self.experience, min(base_score, 80.0))
+        self.experience = max(self.experience, base_score)
 
     def update_pressure_snapshot(self, chips: int, call_cost: int) -> None:
         """(新) 根据筹码与成本估算压力值 (0~1)。"""
         if chips <= 0:
             pressure = 1.0
-        elif call_cost <= 0:
-            pressure = 0.1
         else:
             ratio = call_cost / max(chips, 1)
-            pressure = min(1.0, ratio * 0.8 + (0.2 if chips < call_cost * 2 else 0.0))
-        # 经验越高越能压制压力
-        mitigation = min(0.35, self.experience / 200.0)
-        self.current_pressure = max(0.0, min(1.0, pressure * (1.0 - mitigation)))
+            pressure = min(1.0, ratio * 0.85)
+
+        low_stack_factor = 0.0
+        if chips < 300:
+            deficit_ratio = (300 - max(chips, 0)) / 300.0
+            low_stack_factor = 0.35 + deficit_ratio * 0.45
+        elif chips < call_cost * 2 and call_cost > 0:
+            low_stack_factor = max(low_stack_factor, 0.15)
+
+        if call_cost <= 0 and chips > 0:
+            pressure = max(pressure, 0.12)
+
+        pressure = min(1.0, pressure + low_stack_factor)
+
+        mitigation = min(0.4, self.experience / 220.0)
+        pressure *= (1.0 - mitigation)
+
+        pressure += min(0.25, self.current_pressure * 0.3)
+
+        self.current_pressure = max(0.0, min(1.0, pressure))
 
     def get_pressure_descriptor(self) -> str:
         """(新) 用中文描述当前压力。"""
@@ -98,8 +115,14 @@ class Player:
 
     def get_experience_level(self) -> str:
         """(新) 根据经验值给出等级。"""
-        if self.experience >= 90:
+        if self.cheat_success >= 4 and self.cheat_success >= max(1, self.cheat_attempts // 2):
+            return "千王"
+        if self.mindgame_moves >= 6 and self.experience >= 45:
+            return "心理学大师"
+        if self.experience >= 140:
             return "宗师"
+        if self.experience >= 90:
+            return "大师"
         if self.experience >= 60:
             return "高手"
         if self.experience >= 30:
@@ -154,17 +177,32 @@ class Player:
                 gain += 2.5
             else:
                 gain -= 1.2
+                if cheat_context.get("detected"):
+                    gain -= 1.0
 
-        self.experience = max(0.0, min(120.0, self.experience + gain))
+        if action_json.get("speech"):
+            self.mindgame_moves += 1
+        secret_payload = action_json.get("secret_message")
+        if isinstance(secret_payload, dict) and secret_payload.get("message"):
+            self.mindgame_moves += 2
+
+        self.experience = max(0.0, self.experience + gain)
 
     def update_experience_from_cheat(self, success: bool, cheat_type: str, context: Optional[dict] = None) -> None:
         """(新) 作弊结果反馈经验。"""
+        self.cheat_attempts += 1
         delta = 4.0 if success else -6.0
         if not success and self.experience < 40:
             delta -= 2.0  # 新手失败打击更大
         if cheat_type.upper() == "SWAP_SUIT" and success:
             delta += 1.5
-        self.experience = max(0.0, min(130.0, self.experience + delta))
+        if cheat_type.upper() == "SWAP_RANK" and success:
+            delta += 2.0
+        if success:
+            self.cheat_success += 1
+        elif context and context.get("detected"):
+            delta -= 2.5
+        self.experience = max(0.0, self.experience + delta)
 
     def update_experience_from_reflection(self, reflection_text: str, private_notes: dict) -> None:
         """(新) 复盘也能提升经验。"""
@@ -174,7 +212,7 @@ class Player:
             gain += length_factor
         if private_notes:
             gain += min(len(private_notes) * 0.6, 3.0)
-        self.experience = max(0.0, min(140.0, self.experience + gain))
+        self.experience = max(0.0, self.experience + gain)
 
     def _read_file(self, filepath: str) -> str:
         try:
