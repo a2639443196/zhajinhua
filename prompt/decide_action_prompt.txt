@@ -76,10 +76,10 @@
 你可以*选择性*地在你的 JSON 决策中加入 "secret_message" 键。
 这是一个*独立*的动作，与你的 "action" (如 CALL, RAISE) 同步发生。
 
-"secret_message": {
+"secret_message": {{
   "target_name": "Doubao",
   "message": "我是豹子，你弃牌，下一把我让你。"
-}
+}}
 
 **警告：所有秘密消息都会被上帝记录。如果有人指控你，这些消息将被公开。**
 
