@@ -288,6 +288,44 @@
             letter-spacing: 0.06em;
         }
 
+        .player-experience-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 6px;
+            font-size: 0.92rem;
+            color: var(--text-secondary);
+        }
+
+        .player-experience-text {
+            white-space: nowrap;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .experience-bar {
+            flex: 1;
+            height: 6px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+            position: relative;
+        }
+
+        .experience-bar-fill {
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(90deg, rgba(76, 175, 239, 0.7), rgba(0, 229, 255, 0.9));
+        }
+
+        .player-pressure {
+            margin-top: 4px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            letter-spacing: 0.04em;
+        }
+
         .log-card {
             display: flex;
             flex-direction: column;
@@ -577,13 +615,36 @@
                 statusTag.textContent = player.looked ? "已看牌" : "未看牌";
                 metaRow.appendChild(statusTag);
 
+                const expValue = Number(player.experience_value ?? 0);
+
                 const handRow = document.createElement("div");
                 handRow.className = "player-hand";
                 handRow.textContent = player.hand_str || "...";
 
+                const experienceRow = document.createElement("div");
+                experienceRow.className = "player-experience-row";
+                const expText = document.createElement("span");
+                expText.className = "player-experience-text";
+                expText.textContent = `经验：${player.experience_level} (${expValue.toFixed(1)})`;
+                const expBar = document.createElement("div");
+                expBar.className = "experience-bar";
+                const expBarFill = document.createElement("div");
+                expBarFill.className = "experience-bar-fill";
+                const expRatio = Math.max(0, Math.min(1, expValue / 130));
+                expBarFill.style.width = `${(expRatio * 100).toFixed(1)}%`;
+                expBar.appendChild(expBarFill);
+                experienceRow.appendChild(expText);
+                experienceRow.appendChild(expBar);
+
+                const pressureRow = document.createElement("div");
+                pressureRow.className = "player-pressure";
+                pressureRow.textContent = `心理：${player.pressure_state || "未知"}`;
+
                 card.appendChild(nameRow);
                 card.appendChild(metaRow);
                 card.appendChild(handRow);
+                card.appendChild(experienceRow);
+                card.appendChild(pressureRow);
 
                 playersDiv.appendChild(card);
             });
