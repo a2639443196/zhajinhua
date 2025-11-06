@@ -121,6 +121,11 @@ async def get_index():
     return FileResponse("index.html")
 
 
+@app.get("/mobile")
+async def get_mobile():
+    return FileResponse("mobile.html")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
