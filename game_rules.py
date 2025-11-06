@@ -148,6 +148,8 @@ class GameConfig:
     # (新) 指控成本是跟注成本的 10 倍 (高风险)
     accuse_cost_multiplier: int = 10
     max_rounds: int = 100
+    # (新) 支持为每名玩家设置独立的底注分摊额
+    base_bet_distribution: Optional[List[int]] = None
 
 
 @dataclass

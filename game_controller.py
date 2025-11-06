@@ -59,8 +59,37 @@ class GameController:
         self.CHEAT_RANK_REQUIRED_EXPERIENCE = 75.0
         self._cheat_detection_base = {1: 0.16, 2: 0.32, 3: 0.48}
 
+        base_config = GameConfig(num_players=self.num_players)
+        self._base_ante_total = base_config.base_bet * self.num_players
+        self._ante_increase_interval = 5
+        self._ante_increment = 20
+
     def get_alive_player_count(self) -> int:
         return sum(1 for chips in self.persistent_chips if chips > 0)
+
+    def _get_total_ante_for_current_hand(self) -> int:
+        if self._ante_increase_interval <= 0:
+            return self._base_ante_total
+        hand_index = max(self.hand_count, 1)
+        increments = (hand_index - 1) // self._ante_increase_interval
+        return self._base_ante_total + increments * self._ante_increment
+
+    def _build_ante_distribution(self) -> tuple[int, List[int], int]:
+        alive_indices = [i for i, chips in enumerate(self.persistent_chips) if chips > 0]
+        total_ante = self._get_total_ante_for_current_hand()
+        distribution = [0] * self.num_players
+        if not alive_indices:
+            return 0, distribution, total_ante
+
+        base_share = total_ante // len(alive_indices)
+        remainder = total_ante % len(alive_indices)
+
+        for order, player_idx in enumerate(alive_indices):
+            ante = base_share + (1 if order < remainder else 0)
+            distribution[player_idx] = ante
+
+        per_player_base = base_share + (1 if remainder > 0 else 0)
+        return per_player_base, distribution, total_ante
 
     def _build_panel_data(self, game: ZhajinhuaGame | None, start_player_id: int = -1) -> dict:
         # (已修改)
@@ -857,6 +886,17 @@ class GameController:
     async def run_round(self, start_player_id: int):
         # (已修改) 增加调试打印
         config = GameConfig(num_players=self.num_players)
+        per_player_base, ante_distribution, total_ante = self._build_ante_distribution()
+        config.base_bet = per_player_base
+        config.base_bet_distribution = ante_distribution
+
+        alive_for_ante = sum(1 for amount in ante_distribution if amount > 0)
+        if alive_for_ante > 0:
+            await self.god_print(
+                f"本手底注总额 {total_ante}，由 {alive_for_ante} 名玩家分摊 (基础暗注 {config.base_bet})。",
+                0.5
+            )
+
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
 
         self.player_observed_moods.clear()
@@ -867,8 +907,13 @@ class GameController:
         for i, p in enumerate(game.state.players):
             if self.persistent_chips[i] <= 0: p.alive = False
             if not p.alive and self.persistent_chips[i] > 0:
+                ante_required = 0
+                if config.base_bet_distribution:
+                    ante_required = config.base_bet_distribution[i]
+                else:
+                    ante_required = config.base_bet
                 await self.god_print(
-                    f"玩家 {self.players[i].name} 筹码 ({self.persistent_chips[i]}) 不足支付底注 ({config.base_bet})，本手自动弃牌。",
+                    f"玩家 {self.players[i].name} 筹码 ({self.persistent_chips[i]}) 不足支付底注 ({ante_required})，本手自动弃牌。",
                     0.5)
 
         await self.god_print("--- 初始发牌 (上帝视角已在看板) ---", 1)
