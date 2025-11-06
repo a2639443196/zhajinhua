@@ -2,7 +2,8 @@ import json
 import re
 import time
 import asyncio
-from typing import List, Dict, Callable, Awaitable
+import ast
+from typing import List, Dict, Callable, Awaitable, Optional
 from llm_client import LLMClient
 import pathlib
 import traceback  # (新) 导入 traceback
@@ -29,6 +30,65 @@ class Player:
         except Exception as e:
             print(f"【上帝(系统)】: 读取文件 {filepath} 失败: {str(e)}")
             return ""
+
+    def _extract_json_candidates(self, text: str) -> List[str]:
+        """从给定文本中提取所有可能的 JSON 片段。"""
+        candidates: List[str] = []
+        stack: List[str] = []
+        start_idx: Optional[int] = None
+
+        for idx, ch in enumerate(text):
+            if ch == '{':
+                if not stack:
+                    start_idx = idx
+                stack.append(ch)
+            elif ch == '}':
+                if stack:
+                    stack.pop()
+                    if not stack and start_idx is not None:
+                        candidates.append(text[start_idx: idx + 1])
+                        start_idx = None
+
+        return candidates
+
+    def _safe_parse_json(self, candidate: str) -> Optional[Dict]:
+        """尽可能地将字符串解析为 JSON 对象。"""
+        candidate = candidate.strip()
+        if not candidate:
+            return None
+
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        last_brace = candidate.rfind('}')
+        if last_brace != -1 and last_brace < len(candidate) - 1:
+            trimmed = candidate[:last_brace + 1]
+            try:
+                return json.loads(trimmed)
+            except json.JSONDecodeError:
+                candidate = trimmed
+
+        python_like = re.sub(r'\bnull\b', 'None', candidate)
+        python_like = re.sub(r'\btrue\b', 'True', python_like)
+        python_like = re.sub(r'\bfalse\b', 'False', python_like)
+
+        try:
+            data = ast.literal_eval(python_like)
+        except Exception:
+            return None
+
+        if isinstance(data, dict):
+            return data
+        return None
+
+    def _parse_first_valid_json(self, text: str) -> Optional[Dict]:
+        for candidate in self._extract_json_candidates(text):
+            parsed = self._safe_parse_json(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        return None
 
     # (已修改)
     async def create_persona(self,
@@ -120,14 +180,10 @@ class Player:
             )
             full_content_debug = full_content  # (新) 存储
 
-            json_match = re.search(r'```json\s*({[\s\S]*?})\s*```|\s*({[\s\S]*})', full_content)
+            result = self._parse_first_valid_json(full_content)
 
-            if json_match:
-                json_str = json_match.group(1) or json_match.group(2)
-                result = json.loads(json_str)
-
-                if "action" in result and "reason" in result and "mood" in result:
-                    return result
+            if result and "action" in result and "reason" in result and "mood" in result:
+                return result
 
             raise ValueError(f"LLM 未返回有效的 JSON。")
 
@@ -279,12 +335,9 @@ class Player:
             )
             full_content_debug = full_content  # (新)
 
-            json_match = re.search(r'```json\s*({[\s\S]*?})\s*```|\s*({[\s\S]*})', full_content)
-            if not json_match:
+            result = self._parse_first_valid_json(full_content)
+            if not result:
                 raise ValueError(f"LLM 未返回有效的复盘 JSON。")
-
-            json_str = json_match.group(1) or json_match.group(2)
-            result = json.loads(json_str)
 
             public_reflection = result.get("public_reflection", "...")
             private_impressions = result.get("private_impressions", {})
@@ -295,6 +348,10 @@ class Player:
         except Exception as e:
             # (新) 增强的错误报告
             tb_str = traceback.format_exc()
-            error_msg = f"复盘时出错: {type(e)}: {str(e)} || Content: {full_content_debug[:100]}... || Traceback: {tb_str.replace_oneline()}"
+            tb_str_oneline = tb_str.replace("\n", " || ")
+            error_msg = (
+                "复盘时出错: "
+                f"{type(e)}: {str(e)} || Content: {full_content_debug[:100]}... || Traceback: {tb_str_oneline}"
+            )
             await stream_chunk_cb(f"\n{error_msg}\n")
             return f"({error_msg})", {}
