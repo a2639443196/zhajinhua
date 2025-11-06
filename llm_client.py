@@ -3,6 +3,7 @@ import asyncio
 import json
 from typing import Callable, Awaitable
 
+# 配置文件自己添加即可
 try:
     from config_local import API_BASE_URL, API_KEY
 except ImportError:
