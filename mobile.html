@@ -201,6 +201,41 @@
             color: var(--text-secondary);
         }
 
+        .player-experience {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.88rem;
+            color: var(--text-secondary);
+        }
+
+        .player-experience strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .mobile-experience-bar {
+            flex: 1;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 999px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .mobile-experience-bar span {
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(90deg, rgba(76, 175, 239, 0.7), rgba(0, 229, 255, 0.9));
+        }
+
+        .player-pressure {
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            letter-spacing: 0.04em;
+        }
+
         .player-card.eliminated {
             opacity: 0.55;
             text-decoration: line-through;
@@ -477,6 +512,8 @@
             chipsRow.className = "player-chips";
             chipsRow.textContent = `筹码：${player.chips}`;
 
+            const expValue = Number(player.experience_value ?? 0);
+
             const handRow = document.createElement("div");
             handRow.className = "player-hand";
             handRow.textContent = player.hand_str || "...";
@@ -485,10 +522,29 @@
             statusRow.className = "player-status";
             statusRow.textContent = player.looked ? "状态：已看牌" : "状态：未看牌";
 
+            const experienceRow = document.createElement("div");
+            experienceRow.className = "player-experience";
+            const expText = document.createElement("strong");
+            expText.textContent = `经验：${player.experience_level} (${expValue.toFixed(1)})`;
+            const expBar = document.createElement("div");
+            expBar.className = "mobile-experience-bar";
+            const expFill = document.createElement("span");
+            const expRatio = Math.max(0, Math.min(1, expValue / 130));
+            expFill.style.width = `${(expRatio * 100).toFixed(1)}%`;
+            expBar.appendChild(expFill);
+            experienceRow.appendChild(expText);
+            experienceRow.appendChild(expBar);
+
+            const pressureRow = document.createElement("div");
+            pressureRow.className = "player-pressure";
+            pressureRow.textContent = `心理：${player.pressure_state || "未知"}`;
+
             card.appendChild(nameRow);
             card.appendChild(chipsRow);
             card.appendChild(handRow);
             card.appendChild(statusRow);
+            card.appendChild(experienceRow);
+            card.appendChild(pressureRow);
 
             playersContainer.appendChild(card);
         });
