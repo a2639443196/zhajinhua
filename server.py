@@ -9,11 +9,11 @@ from game_controller import GameController
 # --- 1. LLM 玩家配置 (无修改) ---
 player_configs = [
     {"name": "Qwen3", "model": "Qwen/Qwen3-VL-32B-Instruct"},
-    {"name": "DeepSeekV3.1", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
-    {"name": "Kimi2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
-    {"name": "Ling", "model": "inclusionAI/Ling-1T"},
+    {"name": "Doubao", "model": "doubao-seed-1-6-lite-251015"},
     {"name": "Baidu", "model": "baidu/ERNIE-4.5-300B-A47B"},
-    {"name": "DSV3", "model": "deepseek-ai/DeepSeek-V3"},
+    {"name": "Kimi2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
+    {"name": "DeepSeekV3.1", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
+    {"name": "Ling", "model": "inclusionAI/Ling-1T"},
 ]
 
 
