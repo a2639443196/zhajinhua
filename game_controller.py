@@ -11,7 +11,7 @@ from player import Player
 
 class GameController:
     """
-    (已修改：集成 指控、审判、秘密通讯)
+    (已修改：修复 create_persona 的打印 Bug)
     """
 
     def __init__(self,
@@ -42,9 +42,6 @@ class GameController:
         self.player_last_speech: Dict[int, str | None] = {}
         self.player_private_impressions: Dict[int, Dict[int, str]] = {}
 
-        # (新) 秘密通讯日志
-        # 结构: List[Tuple[hand_num, sender_id, recipient_id, message_content]]
-        # (注意：我们保留所有历史记录，以便审判)
         self.secret_message_log: List[Tuple[int, int, int, str]] = []
 
     def get_alive_player_count(self) -> int:
@@ -90,19 +87,48 @@ class GameController:
         }
 
     async def run_game(self):
-        # ... (此函数无修改, 人设构建阶段 保持不变) ...
+        # (已修改) 确保打印人设
         await self.god_print(f"--- 锦标赛开始 ---", 1)
         await self.god_print(f"初始筹码: {self.persistent_chips}", 1)
         await self.god_panel_update(self._build_panel_data(None, -1))
 
+        # --- (新) 人设构建阶段 ---
         await self.god_print(f"--- 牌桌介绍开始 ---", 1.5)
-        # ... (人设构建逻辑) ...
+        await self.god_print(f"（AI 正在为自己杜撰人设...）", 0.5)
+
+        persona_tasks = []
+        for i, player in enumerate(self.players):
+            if self.persistent_chips[i] > 0 and player.alive:
+                persona_tasks.append(
+                    player.create_persona(
+                        stream_start_cb=self.god_stream_start,
+                        stream_chunk_cb=self.god_stream_chunk
+                    )
+                )
+            else:
+                async def dummy_intro(p_name=player.name):
+                    return f"我是 {p_name} (已淘汰)"
+
+                persona_tasks.append(dummy_intro())
+
+        introductions = await asyncio.gather(*persona_tasks)
+
+        # (新) 修复：在流式传输后，打印最终的、已确定的介绍（或错误信息）。
+        for i, intro_text in enumerate(introductions):
+            if self.persistent_chips[i] > 0:
+                self.player_personas[i] = intro_text  # 存储
+
+                # (新) 明确打印 controller 收到的最终结果。
+                # (player.py 已移除 stream_start_cb 以避免重复打印)
+                await self.god_print(f"【上帝(赛前介绍)】: [{self.players[i].name}]: {intro_text}", 0.5)
+
         await self.god_print(f"--- 牌桌介绍结束 ---", 2)
         await asyncio.sleep(3)
+        # --- (新) 阶段结束 ---
 
+        # (原) 游戏主循环
         while self.get_alive_player_count() > 1:
             self.hand_count += 1
-            # ... (选择庄家逻辑) ...
             start_player_id = (self.last_winner_id + 1) % self.num_players
             start_attempts = 0
             while self.persistent_chips[start_player_id] <= 0:
@@ -113,13 +139,20 @@ class GameController:
                     break
             p_name = self.players[start_player_id].name
             await self.god_print(f"--- 第 {self.hand_count} 手牌开始 (庄家: {p_name}) ---", 1.5)
-            await self.run_round(start_player_id)
 
-            # (新) 检查游戏是否因审判而提前结束
+            # (新) 将 run_round 包在 try/except 中，捕获 player.py 未能捕获的异常
+            try:
+                await self.run_round(start_player_id)
+            except Exception as e:
+                await self.god_print(f"!! run_round 发生严重错误: {e} !!", 1)
+                import traceback
+                traceback.print_exc()
+                await self.god_print("!! 游戏循环已崩溃，停止锦标赛 !!", 1)
+                break  # 退出锦标赛循环
+
             if self.get_alive_player_count() <= 1:
                 break
 
-            # ... (本手结束, 淘汰播报 逻辑不变) ...
             alive_players_post_hand = []
             for i, p in enumerate(self.players):
                 if self.persistent_chips[i] > 0:
@@ -133,19 +166,16 @@ class GameController:
             await asyncio.sleep(3)
 
         await self.god_print(f"--- 锦标赛结束 ---", 2)
-        # ... (宣布胜利者 逻辑不变) ...
         for i, p in enumerate(self.players):
             if self.persistent_chips[i] > 0:
                 await self.god_print(f"最终胜利者是: {p.name} (剩余筹码: {self.persistent_chips[i]})!", 5)
                 break
 
     def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int) -> tuple:
-        # (已修改) 构建所有情报
+        # ... (此函数无修改) ...
         st = game.state
         ps = st.players[player_id]
 
-        # ... (1. 局势, 2. 手牌, 3. 可用动作, 4. 下家, 5. 人设, 6. 复盘, 7. 私有笔记, 8. 实时发言, 9. 情绪 保持不变) ...
-        # ...
         state_summary_lines = [
             f"当前是 {self.players[st.current_player].name} 的回合。",
             f"底池 (Pot): {st.pot}", f"当前暗注 (Base Bet): {st.current_bet}",
@@ -222,37 +252,30 @@ class GameController:
             if mood: mood_lines.append(f"  - {p.name} 看起来: {mood}")
         observed_moods_str = "\n".join(mood_lines) if mood_lines else "暂未观察到对手的明显情绪。"
 
-        # (新) 10. 构建秘密消息收件箱
         secret_message_lines = []
-        # (只显示本局的)
         for (hand_num, sender, recipient, message) in self.secret_message_log:
             if hand_num == self.hand_count and recipient == player_id:
                 sender_name = self.players[sender].name
                 secret_message_lines.append(f"  - [密信] 来自 {sender_name}: {message}")
         received_secret_messages_str = "\n".join(secret_message_lines) if secret_message_lines else "你没有收到任何秘密消息。"
 
-        # 11. (旧) 其他
         min_raise_increment = st.config.min_raise
         dealer_name = self.players[start_player_id].name
         multiplier = 2 if ps.looked else 1
 
-        # (新) 返回所有值
         return (
             "\n".join(state_summary_lines), my_hand, available_actions_str, available_actions_tuples,
             next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
             opponent_private_impressions_str, observed_speech_str,
-            # (新)
             received_secret_messages_str,
-            # (旧)
             min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost
         )
 
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
-        # (已修改) 增加 ACCUSE 目标的解析
+        # ... (此函数无修改) ...
         action_name = action_json.get("action", "FOLD").upper()
 
-        # (新) 查找目标 ID
         def find_target_id(target_name_key: str) -> (int | None, str):
             target_name = action_json.get(target_name_key)
             if not target_name:
@@ -265,7 +288,6 @@ class GameController:
                         return None, f"目标 {target_name} 已弃牌"
             return None, f"未找到目标 {target_name}"
 
-        # 1. 检查动作是否有效
         action_type = None
         for (name, cost) in available_actions:
             if name == action_name:
@@ -276,13 +298,11 @@ class GameController:
             error_msg = f"警告: {self.players[player_id].name} 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
             return Action(player=player_id, type=ActionType.FOLD), error_msg
 
-        # 2. 按类型解析
         amount = None
         target = None
         target2 = None
 
         if action_type == ActionType.RAISE:
-            # ... (RAISE 逻辑不变) ...
             min_inc = game.state.config.min_raise
             try:
                 amount_increment_str = action_json.get("amount")
@@ -315,8 +335,8 @@ class GameController:
 
         return Action(player=player_id, type=action_type, amount=amount, target=target, target2=target2), ""
 
-    # (新) 秘密消息处理器
     async def _handle_secret_message(self, game: ZhajinhuaGame, sender_id: int, message_json: dict):
+        # ... (此函数无修改) ...
         target_name = message_json.get("target_name")
         message = message_json.get("message")
         sender_name = self.players[sender_id].name
@@ -339,16 +359,11 @@ class GameController:
             await self.god_print(f"!! {sender_name} 试图给自己发送秘密消息。", 0.5)
             return
 
-        # (新) 记录消息 (包含手牌编号)
         self.secret_message_log.append((self.hand_count, sender_id, target_id, message))
         await self.god_print(f"【上帝(密信)】: {sender_name} -> {target_name} (消息已记录)", 0.5)
 
-    # (新) 审判入口
     async def _handle_accusation(self, game: ZhajinhuaGame, action: Action, start_player_id: int) -> bool:
-        """
-        处理指控。
-        返回: True (审判发生), False (审判未发生)
-        """
+        # ... (此函数无修改) ...
         accuser_id = action.player
         target_id_1 = action.target
         target_id_2 = action.target2
@@ -356,7 +371,7 @@ class GameController:
 
         await self.god_print(f"--- !! 审判 !! ---", 1)
 
-        if target_id_1 is None or target_id_2 is None:  # (理论上已被 _parse_action_json 拦截)
+        if target_id_1 is None or target_id_2 is None:
             await self.god_print(f"!! {accuser_name} 指控失败：目标无效。", 0.5)
             return False
 
@@ -365,8 +380,6 @@ class GameController:
         await self.god_print(f"玩家 {accuser_name} 发起了指控！", 1)
         await self.god_print(f"指控目标: {target_name_1} 和 {target_name_2}", 1)
 
-        # 1. 检查陪审团 (Jury)
-        # 陪审团 = 存活 & 未 All-In 的玩家 - (指控者, 被告1, 被告2)
         jury_list = [
             i for i in game.alive_players()
             if not game.state.players[i].all_in
@@ -376,16 +389,15 @@ class GameController:
         if not jury_list:
             await self.god_print(f"没有足够的陪审团成员 (0人)。审判自动失败。", 1)
             await self.god_print(f"{accuser_name} 的指控无效，但游戏继续。", 1)
-            return False  # 审判未发生，动作无效
+            return False
 
         jury_names = ', '.join([self.players[i].name for i in jury_list])
         await self.god_print(f"陪审团成员: {jury_names}", 1)
 
-        # 2. 支付堂费
         cost = game.get_accuse_cost(accuser_id)
         accuser_state = game.state.players[accuser_id]
 
-        if accuser_state.chips < cost:  # (理论上已被 available_actions 拦截)
+        if accuser_state.chips < cost:
             await self.god_print(f"{accuser_name} 筹码不足 ({accuser_state.chips}) 支付指控成本 ({cost})。指控自动失败。", 1)
             return False
 
@@ -394,24 +406,20 @@ class GameController:
         await self.god_print(f"{accuser_name} 支付 {cost} 筹码作为“指控堂费”(不退还)。", 1)
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
 
-        # 3. 启动审判
         await self._run_trial_sub_loop(game, accuser_id, target_id_1, target_id_2, jury_list, start_player_id)
-        return True  # 审判已发生
+        return True
 
-    # (新) 审判子循环
     async def _run_trial_sub_loop(self, game: ZhajinhuaGame, accuser_id: int, target_id_1: int, target_id_2: int,
                                   jury_list: List[int], start_player_id: int):
-
+        # ... (此函数无修改) ...
         accuser_name = self.players[accuser_id].name
         target_name_1 = self.players[target_id_1].name
         target_name_2 = self.players[target_id_2].name
 
-        # --- 阶段 1: 呈堂证供 ---
         await self.god_print(f"--- 审判阶段 1: 呈堂证供 ---", 1)
         await self.god_print(f"上帝正在审查 {target_name_1} 和 {target_name_2} (及相关者) 的*所有*秘密通讯...", 2)
 
         evidence_log_entries = []
-        # (公开所有与 T1 或 T2 相关的密信)
         for (hand_num, sender, recipient, message) in self.secret_message_log:
             if sender == target_id_1 or recipient == target_id_1 or \
                     sender == target_id_2 or recipient == target_id_2:
@@ -428,7 +436,6 @@ class GameController:
         evidence_log_str = "\n".join(evidence_log_entries)
         await asyncio.sleep(2)
 
-        # --- 阶段 2: 被告辩护 ---
         await self.god_print(f"--- 审判阶段 2: 被告辩护 ---", 1)
 
         defense_speech_1 = await self.players[target_id_1].defend(
@@ -443,7 +450,6 @@ class GameController:
         )
         await asyncio.sleep(2)
 
-        # --- 阶段 3: 陪审团投票 ---
         await self.god_print(f"--- 审判阶段 3: 陪审团投票 ---", 1)
 
         vote_tasks = []
@@ -457,10 +463,8 @@ class GameController:
             )
 
         votes = await asyncio.gather(*vote_tasks)
-
         await asyncio.sleep(1)
 
-        # --- 阶段 4: 宣布裁决 ---
         await self.god_print(f"--- 审判阶段 4: 裁决 ---", 1)
 
         all_guilty = True
@@ -472,7 +476,6 @@ class GameController:
 
         await asyncio.sleep(2)
 
-        # --- 阶段 5: 执行判决 ---
         await self.god_print(f"--- 审判阶段 5: 执行判决 ---", 1)
 
         accuser_state = game.state.players[accuser_id]
@@ -483,20 +486,18 @@ class GameController:
             await self.god_print(f"裁决：**一致有罪**！", 1)
             await self.god_print(f"{target_name_1} 和 {target_name_2} 联合作弊成立，立即处决！", 1)
 
-            # 1. 收集罚金
             penalty_pool = target_1_state.chips + target_2_state.chips
             target_1_state.chips = 0
             target_2_state.chips = 0
-            target_1_state.alive = False  # 淘汰
-            target_2_state.alive = False  # 淘汰
-            self.players[target_id_1].alive = False  # 永久淘汰
-            self.players[target_id_2].alive = False  # 永久淘汰
+            target_1_state.alive = False
+            target_2_state.alive = False
+            self.players[target_id_1].alive = False
+            self.players[target_id_2].alive = False
 
             await self.god_print(f"没收 {target_name_1} 和 {target_name_2} 的全部筹码，共 {penalty_pool}。", 1)
 
-            # 2. 分配奖励
             reward_accuser = int(penalty_pool * 0.7)
-            reward_jury_pool = penalty_pool - reward_accuser  # 30%
+            reward_jury_pool = penalty_pool - reward_accuser
 
             accuser_state.chips += reward_accuser
             await self.god_print(f"指控者 {accuser_name} 获得 70% 奖励: {reward_accuser} 筹码。", 1)
@@ -505,12 +506,11 @@ class GameController:
                 reward_per_jury = reward_jury_pool // len(jury_list)
                 for i, jury_id in enumerate(jury_list):
                     game.state.players[jury_id].chips += reward_per_jury
-                    # (处理余数)
                     if i == 0:
                         game.state.players[jury_id].chips += (reward_jury_pool % len(jury_list))
                 await self.god_print(f"陪审团 (共 {len(jury_list)} 人) 瓜分 30% 奖励: {reward_jury_pool} 筹码。", 1)
             else:
-                game.state.pot += reward_jury_pool  # 没人分的钱进底池
+                game.state.pot += reward_jury_pool
                 await self.god_print(f"无人陪审团，{reward_jury_pool} 筹码进入底池。", 1)
 
         else:
@@ -518,38 +518,32 @@ class GameController:
             await self.god_print(f"未达到 100% 一致有罪。", 1)
             await self.god_print(f"指控者 {accuser_name} 因虚假指控，立即处决！", 1)
 
-            # 1. 收集罚金 (指控者的全部筹码)
             penalty_pool = accuser_state.chips
             accuser_state.chips = 0
-            accuser_state.alive = False  # 淘汰
-            self.players[accuser_id].alive = False  # 永久淘汰
+            accuser_state.alive = False
+            self.players[accuser_id].alive = False
 
             await self.god_print(f"没收 {accuser_name} 的全部筹码: {penalty_pool}。", 1)
 
-            # 2. 分配奖励 (均分给两名被告)
             reward_per_target = penalty_pool // 2
             target_1_state.chips += reward_per_target
-            target_2_state.chips += (penalty_pool - reward_per_target)  # (处理余数)
+            target_2_state.chips += (penalty_pool - reward_per_target)
 
             await self.god_print(f"{target_name_1} 和 {target_name_2} 瓜分了 {accuser_name} 的所有筹码。", 1)
 
         await self.god_print(f"--- 审判结束 ---", 1)
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
-        await asyncio.sleep(5)  # 戏剧性停顿
+        await asyncio.sleep(5)
 
     async def run_round(self, start_player_id: int):
-        # (已修改) 拦截 ACCUSE 和 secret_message
+        # (已修改)
         config = GameConfig(num_players=self.num_players)
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
 
         self.player_observed_moods.clear()
         self.player_last_speech.clear()
-        # (新) 只清除本局的密信
-        # (修正：我们不清除，因为审判需要历史)
-        # self.secret_message_log.clear()
 
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
-        # ... (弃牌逻辑不变) ...
         for i, p in enumerate(game.state.players):
             if self.persistent_chips[i] <= 0: p.alive = False
             if not p.alive and self.persistent_chips[i] > 0:
@@ -560,10 +554,9 @@ class GameController:
         await self.god_print("--- 初始发牌 (上帝视角已在看板) ---", 1)
 
         while not game.state.finished:
-            # (新) 检查是否因审判导致游戏结束
             if self.get_alive_player_count() <= 1:
                 await self.god_print("审判导致只剩一名玩家，本局提前结束。", 1)
-                game._force_showdown()  # 强制结束以分配底池
+                game._force_showdown()
                 break
 
             current_player_idx = game.state.current_player
@@ -571,7 +564,6 @@ class GameController:
             p_state = game.state.players[current_player_idx]
 
             if not p_state.alive or p_state.all_in:
-                # ... (跳过逻辑不变) ...
                 active_players = [i for i in game.alive_players() if not game.state.players[i].all_in]
                 if len(active_players) <= 1:
                     game._force_showdown()
@@ -588,18 +580,19 @@ class GameController:
             (state_summary, my_hand, actions_str, actions_list,
              next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
              opponent_private_impressions_str, observed_speech_str,
-             received_secret_messages_str,  # (新)
+             received_secret_messages_str,
              min_raise_increment, dealer_name,
              observed_moods_str, multiplier, call_cost) = self._build_llm_prompt(game, current_player_idx,
                                                                                  start_player_id)
 
-            # (新) 2. 调用决策
+            # (新) 2. 调用决策 (已在 player.py 中修复)
+            #    (我们在此处增加一个外层 try/except，以防 player.py 的修复失败)
             try:
                 action_json = await current_player_obj.decide_action(
                     state_summary, my_hand, actions_str, next_player_name,
                     my_persona_str, opponent_personas_str, opponent_reflections_str,
                     opponent_private_impressions_str, observed_speech_str,
-                    received_secret_messages_str,  # (新)
+                    received_secret_messages_str,
                     min_raise_increment,
                     dealer_name,
                     observed_moods_str,
@@ -609,9 +602,10 @@ class GameController:
                     stream_chunk_cb=self.god_stream_chunk
                 )
             except Exception as e:
-                await self.god_print(f"!! 玩家 {current_player_obj.name} 决策失败: {e}。强制弃牌。", 0)
-                action_json = {"action": "FOLD", "reason": "决策系统崩溃", "target_name": None, "mood": "崩溃", "speech": None,
-                               "secret_message": None}
+                # (新) 这是捕获 player.py 内部错误的最后防线
+                await self.god_print(f"!! 玩家 {current_player_obj.name} 决策失败 (Controller 捕获): {e}。强制弃牌。", 0)
+                action_json = {"action": "FOLD", "reason": f"决策系统崩溃: {e}", "target_name": None, "mood": "崩溃",
+                               "speech": None, "secret_message": None}
 
             # (新) 3. 拦截秘密消息
             secret_message_json = action_json.get("secret_message")
@@ -622,22 +616,20 @@ class GameController:
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
             if error_msg:
                 await self.god_print(error_msg, 0.5)
-                action_obj = Action(player=current_player_idx, type=ActionType.FOLD)  # 确保强制弃牌
+                action_obj = Action(player=current_player_idx, type=ActionType.FOLD)
 
             # (新) 5. 拦截指控
             if action_obj.type == ActionType.ACCUSE:
                 trial_happened = await self._handle_accusation(game, action_obj, start_player_id)
-                # (指控消耗回合)
                 if not game.state.finished:
                     game._handle_next_turn()
-                continue  # 跳过标准动作处理
+                continue
 
-            # --- 6. 标准动作处理 ---
+                # --- 6. 标准动作处理 ---
             player_speech = action_json.get("speech")
             self.player_last_speech[current_player_idx] = player_speech
 
             player_mood = action_json.get("mood", "未知")
-            # ... (情绪泄露逻辑不变) ...
             if random.random() < 0.33:
                 self.player_observed_moods[current_player_idx] = player_mood
                 await self.god_print(f"【上帝视角】: {current_player_obj.name} 似乎泄露了一丝情绪: {player_mood}", 0.5)
@@ -668,7 +660,7 @@ class GameController:
             await asyncio.sleep(1)
 
         # --- 7. 结算 (如果游戏正常结束) ---
-        if not game.state.finished:  # (如果循环因审判而退出，可能未 'finished')
+        if not game.state.finished:
             game._force_showdown()
 
         await self.god_print(f"--- 本手结束 ---", 1)
@@ -699,7 +691,6 @@ class GameController:
         new_impressions_map = {}
 
         for i, player in enumerate(self.players):
-            # (新) 只有真正存活的玩家才复盘
             if self.persistent_chips[i] > 0 and self.players[i].alive:
 
                 current_player_impressions = self.player_private_impressions.get(i, {})
@@ -723,7 +714,6 @@ class GameController:
                 new_impressions_map[i] = private_impressions_dict
                 await asyncio.sleep(0.5)
 
-        # (新) 更新笔记
         for player_id, impressions_dict in new_impressions_map.items():
             if not isinstance(impressions_dict, dict): continue
             current_player_impressions = self.player_private_impressions.get(player_id, {})

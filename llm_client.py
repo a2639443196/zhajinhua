@@ -32,28 +32,30 @@ class LLMClient:
             )
 
             async for chunk in stream:
-
-                # --- (关键 BUG 修复) ---
-                # 安全检查：如果 choices 列表为空 (元数据块)，则跳过
                 if not chunk.choices:
                     continue
-                # --- (修复结束) ---
 
                 delta = chunk.choices[0].delta
 
+                # (新) 修复流逻辑
+                # -----------------------------------
                 text_to_stream = ""
 
+                # 1. 检查推理
                 reasoning_chunk = getattr(delta, 'reasoning_content', None) or ""
                 if reasoning_chunk:
                     text_to_stream = reasoning_chunk
 
+                # 2. 检查内容
                 content_chunk = delta.content or ""
                 if content_chunk:
-                    full_content += content_chunk
-                    text_to_stream = content_chunk
+                    full_content += content_chunk  # 只有 content_chunk 被计入 full_content
+                    text_to_stream = content_chunk  # content 优先覆盖
 
+                # 3. 流式传输
                 if text_to_stream:
                     await stream_callback(text_to_stream)
+                # -----------------------------------
 
             return full_content
 
@@ -61,14 +63,14 @@ class LLMClient:
             error_msg = f"LLM 思考超时 ({REQUEST_TIMEOUT_SECONDS}秒)"
             print(f"【上帝(警告)】: {model} {error_msg}")
             await stream_callback(f"\n[LLM 思考超时，强制弃牌...]\n")
-
-            error_json_str = f'\n{{\n  "action": "FOLD", "reason": "{error_msg}", "target_name": null, "mood": "超时" \n}}'
+            # (新) 确保返回的 JSON 包含所有字段
+            error_json_str = f'\n{{\n  "action": "FOLD", "reason": "{error_msg}", "target_name": null, "mood": "超时", "speech": null, "secret_message": null \n}}'
             return error_json_str
 
         except Exception as e:
             error_msg = f"LLM API 调用失败: {str(e)}"
             print(f"【上帝(错误)】: LLM调用出错: {str(e)}")
             await stream_callback(error_msg)
-
-            error_json_str = f'\n{{\n  "action": "FOLD", "reason": "{error_msg}", "target_name": null, "mood": "错误" \n}}'
+            # (新) 确保返回的 JSON 包含所有字段
+            error_json_str = f'\n{{\n  "action": "FOLD", "reason": "{error_msg}", "target_name": null, "mood": "错误", "speech": null, "secret_message": null \n}}'
             return error_json_str
