@@ -170,6 +170,7 @@ RAISE 成本计算公式 !!**
 
     - (新) **如果你想发送 "secret_message"**：
       你 *必须* 提供 "target_name" 和 "message"。
+      - "target_name" 必须与一名仍在牌局中的对手名字完全一致 (请参考上方的“玩家信息”列表)。
 
   这可以与任何其他 "action" (如 CALL, RAISE) 同时发生。
 
@@ -180,7 +181,7 @@ RAISE 成本计算公式 !!**
 格式示例 (加注 并 秘密通讯) !!】
 (LLM 应该这样输出)
 
-我要加注，并偷偷告诉 Doubao 让他弃牌。
+我要加注，并偷偷告诉我的盟友让他弃牌。
 {{
   "action": "RAISE",
   "amount": 40,
@@ -190,7 +191,7 @@ RAISE 成本计算公式 !!**
   "mood": "兴奋",
   "speech": "运气不错，随便加点。",
   "secret_message": {{
-    "target_name": "Doubao",
+    "target_name": "(在场对手的名字)",
     "message": "我是豹子 (AAA)，你快弃牌。"
   }}
 }}
