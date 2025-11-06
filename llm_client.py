@@ -3,10 +3,11 @@ import asyncio
 import json
 from typing import Callable, Awaitable
 
-# ！！重要！！
-# ！！请将此处替换为你的 API 终端地址和 Key ！！
-API_BASE_URL = "http://116.196.117.30:3000/v1"  # 示例地址
-API_KEY = "sk-Ea6XIuVezjgVfC3o01LsMsmwKQWp5x29i06zUayLu2n6tjWo"  # 示例 Key
+try:
+    from config_local import API_BASE_URL, API_KEY
+except ImportError:
+    API_KEY = ""
+    API_BASE_URL = ""
 
 
 class LLMClient:
