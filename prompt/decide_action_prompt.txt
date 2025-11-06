@@ -140,6 +140,10 @@ RAISE 成本计算公式 !!**
     - **如果你选择其他动作**：
       "amount" 必须为 null。
 
+    - **如果你选择 "COMPARE"**：
+      你 *必须* 提供 "target_name"，且它必须与一名仍在牌局中的对手名字完全一致。
+      如果没有合适的目标，请选择其他动作，而不是让 "target_name" 为空。
+
     - (新) **如果你选择 "ACCUSE"**：
       你 *必须* 提供 "target_name" (被指控者1) 和 "target_name_2" (被指控者2)。
 
@@ -165,6 +169,21 @@ RAISE 成本计算公式 !!**
     "target_name": "Doubao",
     "message": "我是豹子 (AAA)，你快弃牌。"
   }}
+}}
+
+【!!
+格式示例 (比牌) !!】
+(LLM 应该这样输出)
+
+我准备和 Doubao 决一胜负。
+{{
+  "action": "COMPARE",
+  "amount": null,
+  "target_name": "Doubao",
+  "target_name_2": null,
+  "reason": "筹码所剩不多，必须和 Doubao 比牌一搏。",
+  "mood": "紧张",
+  "speech": "Doubao，我们来对比一下牌吧。"
 }}
 
 【!!

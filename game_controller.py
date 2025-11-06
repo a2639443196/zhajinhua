@@ -47,16 +47,6 @@ class GameController:
     def get_alive_player_count(self) -> int:
         return sum(1 for chips in self.persistent_chips if chips > 0)
 
-    def _select_default_compare_target(self, game: ZhajinhuaGame, player_id: int) -> int | None:
-        """在缺少 target_name 时，选择一个默认的比牌对象。"""
-
-        for idx, p_state in enumerate(game.state.players):
-            if idx == player_id:
-                continue
-            if p_state.alive and not p_state.all_in:
-                return idx
-        return None
-
     def _build_panel_data(self, game: ZhajinhuaGame | None, start_player_id: int = -1) -> dict:
         # (已修改)
         players_data = []
@@ -281,7 +271,7 @@ class GameController:
         def find_target_id(target_name_key: str) -> (int | None, str):
             target_name = action_json.get(target_name_key)
             if not target_name:
-                return None, f"未提供 {target_name_key}"
+                return None, f"未提供 {target_name_key} (比牌或指控时必须明确指定目标)"
             for i, p in enumerate(self.players):
                 if p.name.strip() == target_name.strip():
                     if game.state.players[i].alive:
@@ -610,27 +600,6 @@ class GameController:
             if "失败" in error_reason or "错误" in error_reason or "超时" in error_reason or "崩溃" in error_reason:
                 await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 强制弃牌，原因: {error_reason}", 0.5)
             # --- 调试块结束 ---
-
-            if action_json.get("action", "").upper() == "COMPARE":
-                target_name = action_json.get("target_name")
-                if not target_name:
-                    fallback_id = self._select_default_compare_target(game, current_player_idx)
-                    if fallback_id is not None:
-                        fallback_name = self.players[fallback_id].name
-                        action_json["target_name"] = fallback_name
-                        await self.god_print(
-                            f"【上帝(提示)】: {current_player_obj.name} 未提供比牌对象，系统自动选择 {fallback_name}。",
-                            0.5
-                        )
-                    else:
-                        action_json["action"] = "FOLD"
-                        action_json["target_name"] = None
-                        auto_reason = "COMPARE 缺少可用 target_name，系统自动弃牌。"
-                        existing_reason = action_json.get("reason")
-                        if existing_reason:
-                            action_json["reason"] = f"{existing_reason} | {auto_reason}"
-                        else:
-                            action_json["reason"] = auto_reason
 
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
