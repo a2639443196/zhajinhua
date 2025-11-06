@@ -32,16 +32,18 @@ class LLMClient:
             )
 
             async for chunk in stream:
+
+                # --- (关键 BUG 修复) ---
+                # 安全检查：如果 choices 列表为空 (元数据块)，则跳过
+                if not chunk.choices:
+                    continue
+                # --- (修复结束) ---
+
                 delta = chunk.choices[0].delta
 
                 text_to_stream = ""
 
-                # --- (关键 BUG 修复) ---
-                # 使用 getattr() 安全地访问 'reasoning_content'
-                # 如果该属性不存在 (例如在 Kimi, Baidu, Doubao上)，它将返回 None
                 reasoning_chunk = getattr(delta, 'reasoning_content', None) or ""
-                # --- (修复结束) ---
-
                 if reasoning_chunk:
                     text_to_stream = reasoning_chunk
 
@@ -60,8 +62,6 @@ class LLMClient:
             print(f"【上帝(警告)】: {model} {error_msg}")
             await stream_callback(f"\n[LLM 思考超时，强制弃牌...]\n")
 
-            # (新) 修正：返回一个包含 JSON 的*字符串*，而不是 JSON 对象
-            # 这样 player.py 中的 re.search 才能正确捕获它
             error_json_str = f'\n{{\n  "action": "FOLD", "reason": "{error_msg}", "target_name": null, "mood": "超时" \n}}'
             return error_json_str
 
