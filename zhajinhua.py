@@ -23,7 +23,7 @@ class ZhajinhuaGame:
                 p.chips -= self.config.base_bet
                 pot += self.config.base_bet
             else:
-                p.alive = True  # (修正) 应该是 False
+                p.alive = False  # (修正) 筹码不足以支付底注的玩家应为 False
                 p.all_in = True
                 pot += p.chips
                 p.chips = 0
@@ -40,7 +40,6 @@ class ZhajinhuaGame:
             last_raiser=start_player_id,
         )
 
-    # (alive_players, next_player, get_call_cost, get_compare_cost - 无修改)
     def alive_players(self) -> List[int]:
         return [i for i, p in enumerate(self.state.players) if p.alive]
 
@@ -66,7 +65,7 @@ class ZhajinhuaGame:
         call_cost = self.get_call_cost(player_id)
         return call_cost * self.config.compare_cost_multiplier
 
-    # --- (核心修改) ---
+    # --- (核心 Bug 修复) ---
     def available_actions(self, player: int) -> List[Tuple[ActionType, int]]:
         st = self.state
         ps = st.players[player]
@@ -79,25 +78,35 @@ class ZhajinhuaGame:
         actions.append((ActionType.FOLD, 0))
 
         call_cost = self.get_call_cost(player)
+        compare_cost = self.get_compare_cost(player)
 
-        # (新) 检查是否能负担得起跟注
-        if ps.chips < call_cost:
-            # 筹码不足，只能弃牌、看牌或“孤注一掷”
-            actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
-        else:
-            # 筹码充足
+        can_call = ps.chips >= call_cost
+        can_compare = ps.chips >= compare_cost
+
+        if can_call:
+            # 筹码足够跟注
             actions.append((ActionType.CALL, call_cost))
 
-            # (新) 检查是否能负担得起最小加注
             min_raise_an_increment = st.config.min_raise
             min_raise_cost = min_raise_an_increment * 2 if ps.looked else min_raise_an_increment
             if ps.chips > call_cost + min_raise_cost:
                 actions.append((ActionType.RAISE, call_cost + min_raise_cost))
 
-            # (新) 检查是否能负担得起比牌
-            compare_cost = self.get_compare_cost(player)
-            if ps.chips >= compare_cost and len(self.alive_players()) >= 2:
+            if can_compare and len(self.alive_players()) >= 2:
                 actions.append((ActionType.COMPARE, compare_cost))
+
+        # (新) 独立的 ALL_IN_SHOWDOWN 检查
+        # 规则: 筹码不足以跟注 (OR) 筹码不足以比牌
+        if (ps.chips < call_cost) or (ps.chips < compare_cost):
+            # (确保我们不重复添加 CALL)
+            if not can_call:
+                # 如果不能 CALL，我们也不应该提供 CALL，只提供 ALL_IN
+                actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
+
+            # (Qwen3 的情况) 如果可以 CALL (200=200) 但不能 COMPARE (200<400)
+            elif can_call and not can_compare:
+                # 我们也提供 ALL_IN 选项
+                actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
 
         return actions
 
@@ -109,8 +118,8 @@ class ZhajinhuaGame:
             return
         st.current_player = self.next_player()
 
-    # --- (核心修改) ---
     def step(self, action: Action):
+        # (此函数无修改)
         st = self.state
         if st.finished: raise RuntimeError("Game already finished")
         if action.player != st.current_player: raise ValueError("Not this player's turn")
@@ -180,9 +189,8 @@ class ZhajinhuaGame:
             self._do_compare(action.player, action.target)
             return
 
-        # (新) "孤注一掷" 的逻辑
         if action.type == ActionType.ALL_IN_SHOWDOWN:
-            pay = ps.chips  # 支付所有剩余筹码
+            pay = ps.chips
             ps.all_in = True
             ps.chips -= pay
             st.pot += pay
@@ -190,9 +198,10 @@ class ZhajinhuaGame:
             return
 
     def _do_compare(self, p1: int, p2: int):
+        # (此函数无修改)
         st = self.state
         res = compare_hands(st.players[p1].hand, st.players[p2].hand)
-        loser = p2 if res > 0 else p1  # (平局时 p1 输)
+        loser = p2 if res > 0 else p1
         st.players[loser].alive = False
         alive = self.alive_players()
         if len(alive) <= 1:
@@ -202,34 +211,24 @@ class ZhajinhuaGame:
         else:
             st.current_player = self.next_player(start_from=p1)
 
-    # (新) "孤注一掷" 的比牌函数
     def _do_all_in_showdown(self, challenger_id: int):
+        # (此函数无修改)
         st = self.state
         challenger_hand = st.players[challenger_id].hand
-
-        # 找到所有其他在局的对手
         opponents = [i for i in self.alive_players() if i != challenger_id]
-
         challenger_lost = False
-
         for opp_id in opponents:
             opp_hand = st.players[opp_id].hand
             res = compare_hands(challenger_hand, opp_hand)
-
             if res < 0:
-                # 挑战者输了
                 challenger_lost = True
-                break  # 停止比牌
-
+                break
         if challenger_lost:
-            # 挑战者输了，挑战者淘汰，游戏继续
             st.players[challenger_id].alive = False
             self._handle_next_turn()
         else:
-            # 挑战者全胜，赢得底池
             for opp_id in opponents:
                 st.players[opp_id].alive = False
-
             st.finished = True
             st.winner = challenger_id
             self._payout()
@@ -282,7 +281,8 @@ class ZhajinhuaGame:
                 send_amount = None
                 if act_type == ActionType.RAISE:
                     send_amount = st.config.min_raise
-                available_actions.append((act_type.name, display_cost, send_amount))
+                # (新) 修改为 (name, cost)
+                available_actions.append((act_type.name, display_cost))
         return {
             "finished": st.finished, "winner": st.winner, "pot": st.pot,
             "current_bet": st.current_bet, "current_player": st.current_player,

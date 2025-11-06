@@ -17,7 +17,7 @@ player_configs = [
 ]
 
 
-# --- 2. WebSocket 连接管理器 (无修改) ---
+# --- 2. WebSocket 连接管理器 (已修改) ---
 class ConnectionManager:
     def __init__(self):
         self.active_spectators: Set[WebSocket] = set()
@@ -49,11 +49,17 @@ class ConnectionManager:
 
     async def _broadcast_json(self, json_message: dict):
         disconnected = set()
-        for ws in self.active_spectators:
+
+        # --- (关键 BUG 修复) ---
+        # 遍历集合的副本 (.copy())，以允许在迭代期间安全地断开连接 (disconnect)
+        for ws in self.active_spectators.copy():
+            # --- (修复结束) ---
             try:
                 await ws.send_json(json_message)
             except Exception:
                 disconnected.add(ws)
+
+        # (这个循环是安全的，因为它遍历的是一个新集合)
         for ws in disconnected:
             self.active_spectators.discard(ws)
 
@@ -98,9 +104,8 @@ async def run_llm_game_loop():
         await god_print_and_broadcast(f"--- 锦标赛结束 (共 {controller.hand_count} 手牌) ---", 2.0)
         await manager.broadcast_status(running=False)
         game_loop_task = None
-    except asyncio.CancelledError:  # (新) 明确捕获取消错误
+    except asyncio.CancelledError:
         await god_print_and_broadcast(f"--- 锦标赛被上帝强制终止 ---", 1.0)
-        # (状态已在 websocket_endpoint 中设置)
     except Exception as e:
         await god_print_and_broadcast(f"!! 游戏控制器发生严重错误: {e} !!", 1)
         await manager.broadcast_status(running=False)
@@ -110,7 +115,7 @@ async def run_llm_game_loop():
         traceback.print_exc()
 
 
-# --- 4. FastAPI 路由 (已修改) ---
+# --- 4. FastAPI 路由 (无修改) ---
 @app.get("/")
 async def get_index():
     return FileResponse("index.html")
@@ -127,21 +132,19 @@ async def websocket_endpoint(ws: WebSocket):
             if data.get("type") == "START_GAME":
                 if game_loop_task is None or game_loop_task.done():
                     await manager.broadcast_log("上帝点击了【开始游戏】...")
-                    await manager.broadcast_status(running=True)  # 广播运行中
+                    await manager.broadcast_status(running=True)
                     game_loop_task = asyncio.create_task(run_llm_game_loop())
                 else:
                     await ws.send_json({"type": "log", "message": "游戏已在运行中。"})
 
-            # --- (新) 停止游戏逻辑 ---
             elif data.get("type") == "STOP_GAME":
                 if game_loop_task and not game_loop_task.done():
-                    game_loop_task.cancel()  # 取消任务
+                    game_loop_task.cancel()
                     game_loop_task = None
                     await manager.broadcast_log("上帝点击了【停止游戏】...")
-                    await manager.broadcast_status(running=False)  # 广播已停止
+                    await manager.broadcast_status(running=False)
                 else:
                     await ws.send_json({"type": "log", "message": "游戏未在运行。"})
-            # ---------------------
 
     except WebSocketDisconnect:
         manager.disconnect(ws)
