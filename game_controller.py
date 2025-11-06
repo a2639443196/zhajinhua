@@ -45,6 +45,9 @@ class GameController:
         self.secret_message_log: List[Tuple[int, int, int, str]] = []
         self.cheat_action_log: List[Tuple[int, int, str, Dict]] = []  # (新) 记录作弊
 
+        # (新) 用于在解析动作后输出额外的警告信息
+        self._parse_warnings: List[str] = []
+
         self._suit_alias_map = {
             "♠": "♠", "黑桃": "♠", "黑心": "♠", "spade": "♠", "spades": "♠",
             "♥": "♥", "红桃": "♥", "红心": "♥", "heart": "♥", "hearts": "♥",
@@ -286,6 +289,7 @@ class GameController:
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
         # ... (此函数无修改) ...
+        self._parse_warnings.clear()
         action_name = action_json.get("action", "FOLD").upper()
 
         def find_target_id(target_name_key: str) -> (int | None, str):
@@ -312,6 +316,53 @@ class GameController:
             player_state = game.state.players[player_id]
             if player_state.looked:
                 action_type = ActionType.LOOK
+
+        if action_type is None and action_name == "RAISE":
+            player_state = game.state.players[player_id]
+            call_cost = game.get_call_cost(player_id)
+            chips = player_state.chips
+            multiplier = 2 if player_state.looked else 1
+            min_raise_inc = game.state.config.min_raise
+            amount_val: Optional[int] = None
+            try:
+                amount_val = int(action_json.get("amount"))
+            except (TypeError, ValueError):
+                amount_val = None
+
+            can_call = any(name == "CALL" for name, _ in available_actions)
+            can_all_in = any(name == "ALL_IN_SHOWDOWN" for name, _ in available_actions)
+            max_affordable_increment = (chips - call_cost) // multiplier if chips >= call_cost else -1
+
+            fallback_applied = False
+            if chips < call_cost:
+                if can_all_in:
+                    action_type = ActionType.ALL_IN_SHOWDOWN
+                    fallback_applied = True
+                    self._parse_warnings.append(
+                        f"警告: {self.players[player_id].name} 加注失败 (筹码不足 {chips}/{call_cost})，自动改为 ALL_IN_SHOWDOWN。"
+                    )
+            else:
+                insufficient_raise = (
+                    amount_val is None
+                    or amount_val < min_raise_inc
+                    or max_affordable_increment < min_raise_inc
+                    or amount_val > max_affordable_increment
+                )
+                total_cost = call_cost + (amount_val or 0) * multiplier if amount_val is not None else None
+                if total_cost is not None and chips <= total_cost:
+                    insufficient_raise = True
+
+                if insufficient_raise and can_call:
+                    action_type = ActionType.CALL
+                    fallback_applied = True
+                    self._parse_warnings.append(
+                        f"警告: {self.players[player_id].name} 筹码不足以加注 (尝试 amount={amount_val})，自动改为 CALL。"
+                    )
+
+            if fallback_applied:
+                action_json["action"] = action_type.name
+                action_json["amount"] = None
+                action_name = action_type.name
 
         if action_type is None:
             error_msg = f"警告: {self.players[player_id].name} S 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
@@ -370,9 +421,22 @@ class GameController:
                 target_id = i
                 break
 
-        if target_id == -1 or not game.state.players[target_id].alive:
-            await self.god_print(f"!! {sender_name} 试图向无效目标 {target_name} 发送秘密消息。", 0.5)
-            return
+        valid_recipients = [
+            i for i, st_player in enumerate(game.state.players)
+            if i != sender_id and st_player.alive and self.players[i].alive
+        ]
+
+        if target_id == -1 or target_id not in valid_recipients:
+            if not valid_recipients:
+                await self.god_print(f"!! {sender_name} 想发送秘密消息，但没有有效的接收者。", 0.5)
+                return
+            original_target = target_name
+            target_id = valid_recipients[0]
+            target_name = self.players[target_id].name
+            await self.god_print(
+                f"!! {sender_name} 指定的秘密消息目标 {original_target} 无效，已改为 {target_name}。",
+                0.5
+            )
 
         if target_id == sender_id:
             await self.god_print(f"!! {sender_name} 试图给自己发送秘密消息。", 0.5)
@@ -745,6 +809,10 @@ class GameController:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
 
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
+            if self._parse_warnings:
+                for warning in self._parse_warnings:
+                    await self.god_print(warning, 0.5)
+                self._parse_warnings.clear()
             if error_msg:
                 await self.god_print(error_msg, 0.5)
                 action_obj = Action(player=current_player_idx, type=ActionType.FOLD)
