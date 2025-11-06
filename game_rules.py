@@ -141,7 +141,7 @@ class Action:
 @dataclass
 class GameConfig:
     num_players: int = 3
-    initial_chips: int = 300
+    initial_chips: int = 600
     base_bet: int = 10
     min_raise: int = 10
     compare_cost_multiplier: int = 2
