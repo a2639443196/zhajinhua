@@ -338,6 +338,12 @@ class Player:
             if result and "action" in result and "reason" in result and "mood" in result:
                 return result
 
+            # (新) 尝试根据自然语言描述推断动作，避免直接判定失败
+            inferred_action = self._infer_action_from_text(full_content)
+            if inferred_action:
+                await stream_chunk_cb("\n[系统提示: 未检测到 JSON，已根据描述推断动作。]")
+                return inferred_action
+
             raise ValueError(f"LLM 未返回有效的 JSON。")
 
         except Exception as e:
@@ -368,6 +374,102 @@ class Player:
             return {"action": "FOLD", "reason": error_msg_oneline, "target_name": None, "mood": "解析失败", "speech": None,
                     "secret_message": None}
             # --- 修复结束 ---
+
+    def _infer_action_from_text(self, text: str) -> Optional[Dict]:
+        """(新) 当 LLM 未输出合法 JSON 时，根据文本内容推测玩家意图。"""
+        if not text:
+            return None
+
+        normalized = text.strip()
+        if not normalized:
+            return None
+
+        # 定义关键字映射
+        action_keywords = {
+            "ALL_IN_SHOWDOWN": ["ALL_IN_SHOWDOWN", "ALL IN", "ALL-IN", "ALLIN", "全下", "孤注一掷", "梭哈"],
+            "CALL": ["CALL", "跟注", "跟上", "跟到底"],
+            "FOLD": ["FOLD", "弃牌", "放弃", "扔牌"],
+            "LOOK": ["LOOK", "看牌", "先看牌"],
+            "CHECK": ["CHECK", "过牌", "过一下"],
+        }
+
+        lowered = normalized.lower()
+
+        detected_action: Optional[str] = None
+        detected_phrase: Optional[str] = None
+
+        sentences = re.split(r"[。！？\n]", normalized)
+        for sentence in sentences:
+            sentence_stripped = sentence.strip()
+            if not sentence_stripped:
+                continue
+            sentence_lower = sentence_stripped.lower()
+            for action, keywords in action_keywords.items():
+                for keyword in keywords:
+                    kw_lower = keyword.lower()
+                    if kw_lower in sentence_lower:
+                        detected_action = action
+                        detected_phrase = sentence_stripped
+                        break
+                if detected_action:
+                    break
+            if detected_action:
+                break
+
+        if not detected_action:
+            # 尝试直接从全文中搜索
+            for action, keywords in action_keywords.items():
+                for keyword in keywords:
+                    if keyword.lower() in lowered:
+                        detected_action = action
+                        detected_phrase = keyword
+                        break
+                if detected_action:
+                    break
+
+        if not detected_action:
+            return None
+
+        # 仅当动作不需要额外信息时才返回，避免产生非法决策
+        if detected_action in {"RAISE", "COMPARE", "ACCUSE"}:
+            return None
+
+        mood_keywords = [
+            "自信", "紧张", "沮丧", "愤怒", "兴奋", "平静", "淡定", "恐惧", "绝望", "期待", "冷静", "忐忑", "激动", "焦虑"
+        ]
+        detected_mood = None
+        for mood_word in mood_keywords:
+            if mood_word in normalized:
+                detected_mood = mood_word
+                break
+
+        if not detected_mood:
+            detected_mood = self.get_pressure_descriptor()
+
+        action_display = {
+            "ALL_IN_SHOWDOWN": "全下",
+            "CALL": "跟注",
+            "FOLD": "弃牌",
+            "LOOK": "看牌",
+            "CHECK": "过牌",
+        }
+        action_cn = action_display.get(detected_action, detected_action)
+        phrase_for_reason = detected_phrase or detected_action
+        reason = f"LLM 未输出 JSON，依据描述“{phrase_for_reason}”推测执行 {action_cn}。"
+
+        inferred_result = {
+            "action": detected_action,
+            "amount": None,
+            "target_name": None,
+            "target_name_2": None,
+            "reason": reason,
+            "mood": detected_mood,
+            "speech": None,
+            "secret_message": None,
+            "cheat_move": None,
+        }
+
+        return inferred_result
 
     # (已修改)
     async def defend(self,
