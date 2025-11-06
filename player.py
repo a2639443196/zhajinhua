@@ -397,24 +397,59 @@ class Player:
 
         detected_action: Optional[str] = None
         detected_phrase: Optional[str] = None
+        detected_reason: Optional[str] = None
+        detected_mood: Optional[str] = None
+        detected_speech: Optional[str] = None
 
-        sentences = re.split(r"[。！？\n]", normalized)
-        for sentence in sentences:
-            sentence_stripped = sentence.strip()
-            if not sentence_stripped:
-                continue
-            sentence_lower = sentence_stripped.lower()
+        # (新) 优先尝试解析形如 “动作: XXX” 的结构化描述
+        structured_patterns = {
+            "action": [r"(?:动作|决定|选择|行动|move|action)[:：]\s*([^\n。！？]+)"],
+            "reason": [r"(?:理由|原因|解析|说明)[:：]\s*([^\n。！？]+)"],
+            "mood": [r"(?:情绪|心情|状态|Mood)[:：]\s*([^\n。！？]+)"],
+            "speech": [r"(?:发言|话语|台词|宣言|说)[:：]\s*([^\n。！？]+)"],
+        }
+
+        structured_info: Dict[str, str] = {}
+        for field, patterns in structured_patterns.items():
+            for pattern in patterns:
+                match = re.search(pattern, normalized, re.IGNORECASE)
+                if match:
+                    structured_info[field] = match.group(1).strip()
+                    break
+
+        if "action" in structured_info:
+            action_value = structured_info["action"].lower()
             for action, keywords in action_keywords.items():
                 for keyword in keywords:
-                    kw_lower = keyword.lower()
-                    if kw_lower in sentence_lower:
+                    if keyword.lower() in action_value:
                         detected_action = action
-                        detected_phrase = sentence_stripped
+                        detected_phrase = structured_info["action"]
                         break
                 if detected_action:
                     break
-            if detected_action:
-                break
+
+        detected_reason = structured_info.get("reason")
+        detected_mood = structured_info.get("mood")
+        detected_speech = structured_info.get("speech")
+
+        sentences = re.split(r"[。！？\n]", normalized)
+        if not detected_action:
+            for sentence in sentences:
+                sentence_stripped = sentence.strip()
+                if not sentence_stripped:
+                    continue
+                sentence_lower = sentence_stripped.lower()
+                for action, keywords in action_keywords.items():
+                    for keyword in keywords:
+                        kw_lower = keyword.lower()
+                        if kw_lower in sentence_lower:
+                            detected_action = action
+                            detected_phrase = sentence_stripped
+                            break
+                    if detected_action:
+                        break
+                if detected_action:
+                    break
 
         if not detected_action:
             # 尝试直接从全文中搜索
@@ -434,17 +469,26 @@ class Player:
         if detected_action in {"RAISE", "COMPARE", "ACCUSE"}:
             return None
 
+        if not detected_reason:
+            # (新) 如果未通过结构化信息获得理由，则尝试使用包含动作的语句
+            detected_reason = detected_phrase
+
         mood_keywords = [
             "自信", "紧张", "沮丧", "愤怒", "兴奋", "平静", "淡定", "恐惧", "绝望", "期待", "冷静", "忐忑", "激动", "焦虑"
         ]
-        detected_mood = None
-        for mood_word in mood_keywords:
-            if mood_word in normalized:
-                detected_mood = mood_word
-                break
+        if not detected_mood:
+            for mood_word in mood_keywords:
+                if mood_word in normalized:
+                    detected_mood = mood_word
+                    break
 
         if not detected_mood:
             detected_mood = self.get_pressure_descriptor()
+
+        if detected_reason:
+            detected_reason = detected_reason.strip()
+        else:
+            detected_reason = detected_phrase or detected_action
 
         action_display = {
             "ALL_IN_SHOWDOWN": "全下",
@@ -454,7 +498,7 @@ class Player:
             "CHECK": "过牌",
         }
         action_cn = action_display.get(detected_action, detected_action)
-        phrase_for_reason = detected_phrase or detected_action
+        phrase_for_reason = detected_reason or detected_phrase or detected_action
         reason = f"LLM 未输出 JSON，依据描述“{phrase_for_reason}”推测执行 {action_cn}。"
 
         inferred_result = {
@@ -464,7 +508,7 @@ class Player:
             "target_name_2": None,
             "reason": reason,
             "mood": detected_mood,
-            "speech": None,
+            "speech": detected_speech,
             "secret_message": None,
             "cheat_move": None,
         }
