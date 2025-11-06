@@ -22,6 +22,159 @@ class Player:
         self.model_name = model_name
         self.llm_client = LLMClient()
         self.alive = True
+        self.experience: float = 0.0  # (新) 记录牌局经验
+        self.persona_tags: set[str] = set()
+        self.persona_text: str = ""
+        self.play_history: List[str] = []
+        self.current_pressure: float = 0.0
+
+    # --- (新) 经验系统辅助常量 ---
+    _EXPERIENCE_KEYWORDS: Dict[str, float] = {
+        "老手": 18.0,
+        "资深": 16.0,
+        "职业": 15.0,
+        "冠军": 14.0,
+        "高手": 12.0,
+        "宗师": 20.0,
+        "冷静": 6.0,
+        "沉着": 6.0,
+        "老练": 10.0,
+        "经验": 8.0,
+        "从容": 5.0,
+        "算计": 7.0,
+        "心理战": 7.5,
+    }
+    _AGGRESSIVE_KEYWORDS = {"激进", "进攻", "攻击", "冒险", "豪赌"}
+    _CAUTIOUS_KEYWORDS = {"稳健", "谨慎", "保守", "冷静", "理性"}
+    _DECEPTIVE_KEYWORDS = {"伪装", "隐藏", "掩饰", "迷惑", "诈唬"}
+
+    def register_persona(self, persona_text: str) -> None:
+        """(新) 根据人设初始化经验标签。"""
+        self.persona_text = persona_text or ""
+        base_score = 12.0  # 默认给一个基础经验，避免纯 0
+        lowered = self.persona_text.lower()
+        for keyword, value in self._EXPERIENCE_KEYWORDS.items():
+            if keyword in persona_text:
+                base_score += value
+        # 检查英文关键字 (以防 prompt 中有英文描述)
+        for keyword, value in self._EXPERIENCE_KEYWORDS.items():
+            if keyword.lower() in lowered:
+                base_score += value * 0.6
+
+        self.persona_tags.clear()
+        if any(k in persona_text for k in self._AGGRESSIVE_KEYWORDS):
+            self.persona_tags.add("aggressive")
+        if any(k in persona_text for k in self._CAUTIOUS_KEYWORDS):
+            self.persona_tags.add("cautious")
+        if any(k in persona_text for k in self._DECEPTIVE_KEYWORDS):
+            self.persona_tags.add("deceptive")
+
+        self.experience = max(self.experience, min(base_score, 80.0))
+
+    def update_pressure_snapshot(self, chips: int, call_cost: int) -> None:
+        """(新) 根据筹码与成本估算压力值 (0~1)。"""
+        if chips <= 0:
+            pressure = 1.0
+        elif call_cost <= 0:
+            pressure = 0.1
+        else:
+            ratio = call_cost / max(chips, 1)
+            pressure = min(1.0, ratio * 0.8 + (0.2 if chips < call_cost * 2 else 0.0))
+        # 经验越高越能压制压力
+        mitigation = min(0.35, self.experience / 200.0)
+        self.current_pressure = max(0.0, min(1.0, pressure * (1.0 - mitigation)))
+
+    def get_pressure_descriptor(self) -> str:
+        """(新) 用中文描述当前压力。"""
+        if self.current_pressure >= 0.8:
+            return "濒临崩溃"
+        if self.current_pressure >= 0.6:
+            return "压力山大"
+        if self.current_pressure >= 0.4:
+            return "紧张"
+        if self.current_pressure >= 0.2:
+            return "尚算从容"
+        return "悠然自得"
+
+    def get_experience_level(self) -> str:
+        """(新) 根据经验值给出等级。"""
+        if self.experience >= 90:
+            return "宗师"
+        if self.experience >= 60:
+            return "高手"
+        if self.experience >= 30:
+            return "熟练"
+        return "新手"
+
+    def get_experience_summary(self) -> str:
+        return f"{self.get_experience_level()} (经验值: {self.experience:.1f})"
+
+    def get_mood_leak_probability(self) -> float:
+        """(新) 依据经验与压力决定情绪泄露概率。"""
+        base = 0.33 + (self.current_pressure - 0.5) * 0.22
+        if self.experience >= 90:
+            base *= 0.45
+        elif self.experience >= 60:
+            base *= 0.6
+        elif self.experience <= 15:
+            base *= 1.25
+        return max(0.05, min(0.75, base))
+
+    def update_experience_after_action(self, action_json: dict, cheat_context: Optional[dict] = None) -> None:
+        """(新) 根据动作和玩法提升经验。"""
+        if not isinstance(action_json, dict):
+            return
+        action_name = str(action_json.get("action", "")).upper()
+        if not action_name:
+            return
+
+        gain = 1.0
+        if action_name in {"RAISE", "COMPARE"}:
+            gain += 1.5
+        elif action_name == "CALL":
+            gain += 0.8
+        elif action_name == "FOLD":
+            gain += 0.3
+
+        if "aggressive" in self.persona_tags and action_name in {"RAISE", "COMPARE", "ALL_IN_SHOWDOWN"}:
+            gain += 0.8
+        if "cautious" in self.persona_tags and action_name in {"FOLD", "CALL"}:
+            gain += 0.6
+        if "deceptive" in self.persona_tags and action_json.get("speech"):
+            gain += 0.4
+
+        mood = action_json.get("mood") or ""
+        if isinstance(mood, str) and any(k in mood for k in ("紧张", "恐惧", "崩溃")):
+            gain += 0.2  # 在压力中累积经验
+
+        self.play_history.append(action_name)
+
+        if cheat_context and cheat_context.get("attempted"):
+            if cheat_context.get("success"):
+                gain += 2.5
+            else:
+                gain -= 1.2
+
+        self.experience = max(0.0, min(120.0, self.experience + gain))
+
+    def update_experience_from_cheat(self, success: bool, cheat_type: str, context: Optional[dict] = None) -> None:
+        """(新) 作弊结果反馈经验。"""
+        delta = 4.0 if success else -6.0
+        if not success and self.experience < 40:
+            delta -= 2.0  # 新手失败打击更大
+        if cheat_type.upper() == "SWAP_SUIT" and success:
+            delta += 1.5
+        self.experience = max(0.0, min(130.0, self.experience + delta))
+
+    def update_experience_from_reflection(self, reflection_text: str, private_notes: dict) -> None:
+        """(新) 复盘也能提升经验。"""
+        gain = 0.5
+        if reflection_text:
+            length_factor = min(len(reflection_text) / 120.0, 2.0)
+            gain += length_factor
+        if private_notes:
+            gain += min(len(private_notes) * 0.6, 3.0)
+        self.experience = max(0.0, min(140.0, self.experience + gain))
 
     def _read_file(self, filepath: str) -> str:
         try:

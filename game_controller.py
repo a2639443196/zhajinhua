@@ -2,10 +2,10 @@ import time
 import json
 import asyncio
 import random
-from typing import List, Dict, Callable, Awaitable, Tuple
+from typing import List, Dict, Callable, Awaitable, Tuple, Optional
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
-from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand
+from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card
 from player import Player
 
 
@@ -43,6 +43,16 @@ class GameController:
         self.player_private_impressions: Dict[int, Dict[int, str]] = {}
 
         self.secret_message_log: List[Tuple[int, int, int, str]] = []
+        self.cheat_action_log: List[Tuple[int, int, str, Dict]] = []  # (新) 记录作弊
+
+        self._suit_alias_map = {
+            "♠": "♠", "黑桃": "♠", "黑心": "♠", "spade": "♠", "spades": "♠",
+            "♥": "♥", "红桃": "♥", "红心": "♥", "heart": "♥", "hearts": "♥",
+            "♣": "♣", "梅花": "♣", "草花": "♣", "club": "♣", "clubs": "♣",
+            "♦": "♦", "方块": "♦", "diamond": "♦", "diamonds": "♦"
+        }
+
+        self.CHEAT_SWAP_REQUIRED_EXPERIENCE = 60.0
 
     def get_alive_player_count(self) -> int:
         return sum(1 for chips in self.persistent_chips if chips > 0)
@@ -74,6 +84,7 @@ class GameController:
                         hand_str = ' '.join([INT_TO_RANK[c.rank] + SUITS[c.suit] for c in sorted_hand])
                     else:
                         hand_str = "..."
+                self.players[i].update_pressure_snapshot(player_chips, game.get_call_cost(i) if game else 0)
             players_data.append({
                 "id": i,
                 "name": p.name,
@@ -81,7 +92,10 @@ class GameController:
                 "hand_str": hand_str,
                 "looked": player_looked,
                 "is_active": player_is_active,
-                "is_dealer": is_dealer
+                "is_dealer": is_dealer,
+                "experience_level": p.get_experience_level(),
+                "experience_value": round(p.experience, 1),
+                "pressure_state": p.get_pressure_descriptor()
             })
         return {
             "hand_count": self.hand_count,
@@ -115,6 +129,7 @@ class GameController:
             await self.god_stream_chunk("\n")
 
             self.player_personas[i] = intro_text
+            self.players[i].register_persona(intro_text)  # (新) 初始化经验
             await asyncio.sleep(0.5)
 
         await self.god_print(f"--- 牌桌介绍结束 ---", 2)
@@ -207,7 +222,7 @@ class GameController:
         next_player_id = game.next_player(start_from=player_id)
         next_player_name = self.players[next_player_id].name
 
-        my_persona_str = f"你正在扮演: {self.player_personas.get(player_id, '(暂无)')}"
+        player_obj = self.players[player_id]
         opponent_personas_lines = []
         for i, p in enumerate(self.players):
             if i == player_id: continue
@@ -254,6 +269,11 @@ class GameController:
         min_raise_increment = st.config.min_raise
         dealer_name = self.players[start_player_id].name
         multiplier = 2 if ps.looked else 1
+
+        player_obj.update_pressure_snapshot(ps.chips, call_cost)
+        my_persona_str = f"你正在扮演: {self.player_personas.get(player_id, '(暂无)')}"
+        my_persona_str += f"\n【你的牌局经验】{player_obj.get_experience_summary()}"
+        my_persona_str += f"\n【当前心理压力】{player_obj.get_pressure_descriptor()}"
 
         return (
             "\n".join(state_summary_lines), my_hand, available_actions_str, available_actions_tuples,
@@ -354,6 +374,106 @@ class GameController:
         self.secret_message_log.append((self.hand_count, sender_id, target_id, message))
         await self.god_print(f"【上帝(密信)】: {sender_name} -> {target_name} (消息已记录)", 0.5)
 
+    def _normalize_suit_symbol(self, raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        cleaned = str(raw).strip().lower()
+        # 优先匹配原始符号
+        if raw in self._suit_alias_map:
+            return self._suit_alias_map[raw]
+        return self._suit_alias_map.get(cleaned)
+
+    async def _handle_cheat_move(self, game: ZhajinhuaGame, player_id: int, cheat_move: Optional[dict]) -> Dict[str, object]:
+        """(新) 处理换花色作弊。"""
+        result = {"attempted": False, "success": False, "type": None}
+        if not cheat_move or not isinstance(cheat_move, dict):
+            return result
+
+        result["attempted"] = True
+        cheat_type_raw = str(cheat_move.get("type", "")).upper()
+        result["type"] = cheat_type_raw or "UNKNOWN"
+        player_obj = self.players[player_id]
+        player_name = player_obj.name
+
+        if cheat_type_raw != "SWAP_SUIT":
+            await self.god_print(f"【上帝(警告)】: {player_name} 试图执行未知作弊动作 {cheat_type_raw}。", 0.5)
+            log_payload = {"success": False, "error": "未知作弊类型", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        if player_obj.experience < self.CHEAT_SWAP_REQUIRED_EXPERIENCE:
+            await self.god_print(
+                f"【上帝(警告)】: {player_name} 试图换牌 (花色)，但经验不足 ({player_obj.experience:.1f} < {self.CHEAT_SWAP_REQUIRED_EXPERIENCE})。",
+                0.5
+            )
+            log_payload = {"success": False, "error": "经验不足", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        try:
+            card_index_raw = cheat_move.get("card_index")
+            card_index = int(card_index_raw)
+        except (TypeError, ValueError):
+            await self.god_print(f"【上帝(警告)】: {player_name} 提供的换牌索引无效: {cheat_move.get('card_index')}。", 0.5)
+            log_payload = {"success": False, "error": "索引无效", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        target_suit_symbol = self._normalize_suit_symbol(cheat_move.get("new_suit"))
+        if target_suit_symbol is None:
+            await self.god_print(f"【上帝(警告)】: {player_name} 提供的目标花色无效: {cheat_move.get('new_suit')}。", 0.5)
+            log_payload = {"success": False, "error": "花色无效", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        ps = game.state.players[player_id]
+        idx = card_index - 1 if card_index > 0 else card_index
+        if idx < 0 or idx >= len(ps.hand):
+            await self.god_print(f"【上帝(警告)】: {player_name} 试图修改不存在的第 {card_index} 张牌。", 0.5)
+            log_payload = {"success": False, "error": "索引越界", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        old_card = ps.hand[idx]
+        if SUITS[old_card.suit] == target_suit_symbol:
+            await self.god_print(f"【上帝(提示)】: {player_name} 换牌花色与原花色相同，未产生变化。", 0.5)
+            log_payload = {
+                "success": False,
+                "error": "同花色无变更",
+                "raw": cheat_move,
+                "card_index": card_index,
+            }
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            return result
+
+        new_card = Card(rank=old_card.rank, suit=SUITS.index(target_suit_symbol))
+        ps.hand[idx] = new_card
+        cover_story = cheat_move.get("cover_story")
+
+        log_payload = {
+            "success": True,
+            "card_index": card_index,
+            "from": SUITS[old_card.suit],
+            "to": target_suit_symbol,
+            "cover_story": cover_story,
+        }
+        self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+        player_obj.update_experience_from_cheat(True, cheat_type_raw, log_payload)
+
+        await self.god_print(
+            f"【上帝(作弊日志)】: {player_name} 偷偷将第 {card_index} 张牌的花色从 {SUITS[old_card.suit]} 换成 {target_suit_symbol}。",
+            0.5
+        )
+
+        result["success"] = True
+        return result
+
     async def _handle_accusation(self, game: ZhajinhuaGame, action: Action, start_player_id: int) -> bool:
         # ... (此函数无修改) ...
         accuser_id = action.player
@@ -418,6 +538,15 @@ class GameController:
                 sender_name = self.players[sender].name
                 recipient_name = self.players[recipient].name
                 log = f"  - [H{hand_num}] {sender_name} -> {recipient_name}: {message}"
+                evidence_log_entries.append(log)
+                await self.god_print(log, 0.5)
+
+        for (hand_num, actor_id, cheat_type, payload) in self.cheat_action_log:
+            if actor_id == target_id_1 or actor_id == target_id_2:
+                actor_name = self.players[actor_id].name
+                status = "成功" if payload.get("success") else "失败"
+                detail = payload.get("error") or f"第 {payload.get('card_index')} 张: {payload.get('from')} -> {payload.get('to')}"
+                log = f"  - [H{hand_num}] {actor_name} 试图使用非法动作 {cheat_type} ({status}): {detail}"
                 evidence_log_entries.append(log)
                 await self.god_print(log, 0.5)
 
@@ -534,6 +663,7 @@ class GameController:
 
         self.player_observed_moods.clear()
         self.player_last_speech.clear()
+        self.cheat_action_log.clear()
 
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
         for i, p in enumerate(game.state.players):
@@ -601,6 +731,8 @@ class GameController:
                 await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 强制弃牌，原因: {error_reason}", 0.5)
             # --- 调试块结束 ---
 
+            cheat_context = await self._handle_cheat_move(game, current_player_idx, action_json.get("cheat_move"))
+
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
@@ -620,7 +752,8 @@ class GameController:
             self.player_last_speech[current_player_idx] = player_speech
 
             player_mood = action_json.get("mood", "未知")
-            if random.random() < 0.33:
+            leak_probability = current_player_obj.get_mood_leak_probability()
+            if random.random() < leak_probability:
                 self.player_observed_moods[current_player_idx] = player_mood
                 await self.god_print(f"【上帝视角】: {current_player_obj.name} 似乎泄露了一丝情绪: {player_mood}", 0.5)
             else:
@@ -642,6 +775,8 @@ class GameController:
                 if not game.state.finished:
                     game.step(Action(player=current_player_idx, type=ActionType.FOLD))
                     await self.god_panel_update(self._build_panel_data(game, start_player_id))
+
+            current_player_obj.update_experience_after_action(action_json, cheat_context)
 
             if action_obj.type == ActionType.LOOK and not game.state.finished:
                 await self.god_print(f"{current_player_obj.name} 刚刚看了牌，现在轮到他/她再次行动...", 1)
@@ -700,6 +835,7 @@ class GameController:
 
                 self.player_reflections[i] = reflection_text
                 new_impressions_map[i] = private_impressions_dict
+                player.update_experience_from_reflection(reflection_text, private_impressions_dict)
                 await asyncio.sleep(0.5)
 
         for player_id, impressions_dict in new_impressions_map.items():
