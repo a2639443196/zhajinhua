@@ -34,13 +34,15 @@ class Player:
                             opponent_reflections: str,
                             min_raise_increment: int,
                             dealer_name: str,
-                            observed_moods: str, # <-- (新) 1. 接收观察到的情绪
+                            observed_moods: str,
+                            multiplier: int,  # <-- (新) 1. 接收倍率
+                            call_cost: int,  # <-- (新) 2. 接收跟注成本
                             stream_start_cb: Callable[[str], Awaitable[None]],
                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
         """
         (已修改)
-        1. 增加 min_raise_increment, dealer_name。
-        2. (新) 增加 observed_moods。
+        1. 增加 observed_moods。
+        2. (新) 增加 multiplier, call_cost。
         """
         template = self._read_file(DECIDE_ACTION_PROMPT_PATH)
 
@@ -56,7 +58,9 @@ class Player:
             opponent_reflections=opponent_reflections,
             min_raise_increment=min_raise_increment,
             dealer_name=dealer_name,
-            observed_moods=observed_moods # <-- (新) 2. 传入 Prompt
+            observed_moods=observed_moods,
+            multiplier=multiplier,  # <-- (新) 3. 传入 Prompt
+            call_cost=call_cost  # <-- (新) 4. 传入 Prompt
         )
         messages = [{"role": "user", "content": prompt}]
 
@@ -75,7 +79,6 @@ class Player:
                 json_str = json_match.group(1) or json_match.group(2)
                 result = json.loads(json_str)
 
-                # (新) 3. 确保 JSON 包含 mood
                 if "action" in result and "reason" in result and "mood" in result:
                     return result
 
@@ -85,7 +88,6 @@ class Player:
             error_msg = f"LLM 解析失败: {str(e)}"
             print(f"【上帝(警告)】: {self.name} 解析流式JSON失败: {str(e)}")
             await stream_chunk_cb(f"\n[LLM 解析失败: {error_msg}]")
-            # (新) 4. 确保失败时也返回 mood
             return {"action": "FOLD", "reason": error_msg, "target_name": None, "mood": "解析失败"}
 
     # (reflect 方法 - 无修改)

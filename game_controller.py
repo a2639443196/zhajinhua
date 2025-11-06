@@ -1,7 +1,6 @@
 import time
 import json
 import asyncio
-import random  # (新) 1. 导入 random
 from typing import List, Dict, Callable, Awaitable
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
@@ -11,9 +10,7 @@ from player import Player
 
 class GameController:
     """
-    (已修改：手牌排序和牌型评估)
-    (已修改：增加 'is_dealer' (庄家) 标记)
-    (已修改：增加 'mood' (情绪) 泄露机制)
+    (已修改：增加 'multiplier' (下注倍率) 传递)
     """
 
     def __init__(self,
@@ -38,7 +35,7 @@ class GameController:
         self.hand_count = 0
         self.last_winner_id = 0
         self.player_reflections: Dict[int, str] = {}
-        self.player_observed_moods: Dict[int, str] = {}  # (新) 2. 存储泄露的情绪
+        self.player_observed_moods: Dict[int, str] = {}
 
     def get_alive_player_count(self) -> int:
         return sum(1 for chips in self.persistent_chips if chips > 0)
@@ -118,7 +115,7 @@ class GameController:
                 break
 
     def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int) -> tuple:
-        """(新) 增加 observed_moods"""
+        """(新) 增加 multiplier 返回值"""
         st = game.state
         ps = st.players[player_id]
 
@@ -152,7 +149,11 @@ class GameController:
 
         available_actions_tuples = []
         raw_actions = game.available_actions(player_id)
+        # (新) 我们需要 call_cost 来帮助 AI 计算
+        call_cost = 0
         for act_type, display_cost in raw_actions:
+            if act_type == ActionType.CALL:
+                call_cost = display_cost  # 捕获真实的跟注成本
             available_actions_tuples.append((act_type.name, display_cost))
 
         available_actions_str = "\n".join(
@@ -169,20 +170,17 @@ class GameController:
             reflection = self.player_reflections.get(i)
             if reflection:
                 reflection_lines.append(f"  - {p.name}: {reflection}")
-
         if not reflection_lines:
             opponent_reflections_str = "暂无对手的过往人设信息。"
         else:
             opponent_reflections_str = "\n".join(reflection_lines)
 
-        # (新) 3. 构建观察到的情绪字符串
         mood_lines = []
         for i, p in enumerate(self.players):
             if i == player_id: continue
             mood = self.player_observed_moods.get(i)
             if mood:
                 mood_lines.append(f"  - {p.name} 看起来: {mood}")
-
         if not mood_lines:
             observed_moods_str = "暂未观察到对手的明显情绪。"
         else:
@@ -191,8 +189,11 @@ class GameController:
         min_raise_increment = st.config.min_raise
         dealer_name = self.players[start_player_id].name
 
+        # (新) 计算真实的倍率 (1=暗注, 2=明注)
+        multiplier = 2 if ps.looked else 1
+
         return "\n".join(
-            state_summary_lines), my_hand, available_actions_str, available_actions_tuples, next_player_name, opponent_reflections_str, min_raise_increment, dealer_name, observed_moods_str  # <-- (新)
+            state_summary_lines), my_hand, available_actions_str, available_actions_tuples, next_player_name, opponent_reflections_str, min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost  # <-- (新)
 
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
@@ -244,11 +245,8 @@ class GameController:
         """(新) 接收 start_player_id"""
         config = GameConfig(num_players=self.num_players)
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
-
-        self.player_observed_moods.clear()  # (新) 4. 每手牌开始时，清空泄露的情绪
-
+        self.player_observed_moods.clear()
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
-
         for i, p in enumerate(game.state.players):
             if self.persistent_chips[i] <= 0:
                 p.alive = False
@@ -256,9 +254,7 @@ class GameController:
                 await self.god_print(
                     f"玩家 {self.players[i].name} 筹码 ({self.persistent_chips[i]}) 不足支付底注 ({config.base_bet})，本手自动弃牌。",
                     0.5)
-
         await self.god_print("--- 初始发牌 (上帝视角已在看板) ---", 1)
-
         while not game.state.finished:
             current_player_idx = game.state.current_player
             current_player_obj = self.players[current_player_idx]
@@ -269,18 +265,17 @@ class GameController:
                     game._force_showdown()
                     await self.god_panel_update(self._build_panel_data(game, start_player_id))
                     continue
-                await self.god_print(
-                    f"跳过 {current_player_obj.name} (状态: {'All-In' if p_state.all_in else '已弃牌'})", 0.5)
+                await self.god_print(f"跳过 {current_player_obj.name} (状态: {'All-In' if p_state.all_in else '已弃牌'})", 0.5)
                 game._handle_next_turn()
                 await self.god_panel_update(self._build_panel_data(game, start_player_id))
                 continue
-
             await self.god_print(f"--- 轮到 {current_player_obj.name} ---", 1)
 
             (state_summary, my_hand, actions_str, actions_list,
              next_player_name, opponent_reflections_str,
              min_raise_increment, dealer_name,
-             observed_moods_str) = self._build_llm_prompt(game, current_player_idx, start_player_id)  # (新)
+             observed_moods_str, multiplier, call_cost) = self._build_llm_prompt(game, current_player_idx,
+                                                                                 start_player_id)  # (新)
 
             try:
                 action_json = await current_player_obj.decide_action(
@@ -288,24 +283,22 @@ class GameController:
                     opponent_reflections_str,
                     min_raise_increment,
                     dealer_name,
-                    observed_moods_str,  # <-- (新) 传入观察到的情绪
+                    observed_moods_str,
+                    multiplier,  # <-- (新) 传入倍率
+                    call_cost,  # <-- (新) 传入跟注成本
                     stream_start_cb=self.god_stream_start,
                     stream_chunk_cb=self.god_stream_chunk
                 )
             except Exception as e:
                 await self.god_print(f"!! 玩家 {current_player_obj.name} 决策失败: {e}。强制弃牌。", 0)
                 action_json = {"action": "FOLD", "reason": "决策系统崩溃", "target_name": None, "mood": "崩溃"}
-
-            # (新) 5. 情绪泄露概率逻辑
-            player_mood = action_json.get("mood", "未知")  # 从 AI 获取情绪
-            MOOD_LEAK_CHANCE = 0.33  # 33% 的概率泄露
+            player_mood = action_json.get("mood", "未知")
+            MOOD_LEAK_CHANCE = 0.33
             if random.random() < MOOD_LEAK_CHANCE:
                 self.player_observed_moods[current_player_idx] = player_mood
                 await self.god_print(f"【上帝视角】: {current_player_obj.name} 似乎泄露了一丝情绪: {player_mood}", 0.5)
             else:
-                # 情绪被隐藏了，清除上一轮的观察
                 self.player_observed_moods.pop(current_player_idx, None)
-
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
             if error_msg: await self.god_print(error_msg, 0.5)
             action_desc = f"{action_obj.type.name}"

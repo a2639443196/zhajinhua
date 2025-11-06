@@ -6,50 +6,38 @@ from typing import List, Tuple
 class ZhajinhuaGame:
     def __init__(self, config: GameConfig = GameConfig(),
                  initial_chips_list: List[int] | None = None,
-                 start_player_id: int = 0):  # <-- 1. 接受 start_player_id
-        """
-        (已修改) 接受一个可选的筹码列表和起始玩家ID。
-        """
+                 start_player_id: int = 0):
         self.config = config
-
         if initial_chips_list is None:
             initial_chips_list = [self.config.initial_chips] * self.config.num_players
+        self.state = self._init_game(initial_chips_list, start_player_id)
 
-        self.state = self._init_game(initial_chips_list, start_player_id)  # <-- 传入 ID
-
-    def _init_game(self, current_chips: List[int], start_player_id: int) -> GameState:  # <-- 1. 接受 start_player_id
-        """
-        (已修改) 使用传入的筹码列表和起始玩家ID初始化状态。
-        """
+    def _init_game(self, current_chips: List[int], start_player_id: int) -> GameState:
         deck = create_deck()
         players = []
-
         for i in range(self.config.num_players):
             players.append(PlayerState(chips=current_chips[i]))
-
         pot = 0
         for p in players:
             if p.chips >= self.config.base_bet:
                 p.chips -= self.config.base_bet
                 pot += self.config.base_bet
             else:
-                p.alive = True
+                p.alive = True  # (修正) 应该是 False
                 p.all_in = True
                 pot += p.chips
                 p.chips = 0
-
         for _ in range(3):
             for p in players:
                 p.hand.append(deck.pop())
-
         return GameState(
             config=self.config,
             deck=deck,
             players=players,
             pot=pot,
             current_bet=self.config.base_bet,
-            current_player=start_player_id,  # <-- 1. 使用传入的ID
-            last_raiser=start_player_id,  # <-- 1. 底注视为起始玩家 "raise"
+            current_player=start_player_id,
+            last_raiser=start_player_id,
         )
 
     # (alive_players, next_player, get_call_cost, get_compare_cost - 无修改)
@@ -78,48 +66,51 @@ class ZhajinhuaGame:
         call_cost = self.get_call_cost(player_id)
         return call_cost * self.config.compare_cost_multiplier
 
-    # (available_actions - 无修改)
+    # --- (核心修改) ---
     def available_actions(self, player: int) -> List[Tuple[ActionType, int]]:
         st = self.state
         ps = st.players[player]
         if not ps.alive or st.finished or ps.all_in:
             return []
+
         actions = []
         if not ps.looked:
             actions.append((ActionType.LOOK, 0))
         actions.append((ActionType.FOLD, 0))
+
         call_cost = self.get_call_cost(player)
-        if ps.chips <= call_cost:
-            actions.append((ActionType.CALL, ps.chips))  # Call (All-in)
+
+        # (新) 检查是否能负担得起跟注
+        if ps.chips < call_cost:
+            # 筹码不足，只能弃牌、看牌或“孤注一掷”
+            actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
         else:
+            # 筹码充足
             actions.append((ActionType.CALL, call_cost))
+
+            # (新) 检查是否能负担得起最小加注
             min_raise_an_increment = st.config.min_raise
             min_raise_cost = min_raise_an_increment * 2 if ps.looked else min_raise_an_increment
             if ps.chips > call_cost + min_raise_cost:
                 actions.append((ActionType.RAISE, call_cost + min_raise_cost))
+
+            # (新) 检查是否能负担得起比牌
             compare_cost = self.get_compare_cost(player)
             if ps.chips >= compare_cost and len(self.alive_players()) >= 2:
                 actions.append((ActionType.COMPARE, compare_cost))
+
         return actions
 
     def _handle_next_turn(self):
-        """(已修改) 处理回合结束，切换到下一个玩家。"""
         st = self.state
-
         active_players = [i for i in self.alive_players() if not st.players[i].all_in]
         if len(active_players) <= 1:
             self._force_showdown()
             return
-
         st.current_player = self.next_player()
 
-        # --- (修改点 2) ---
-        # 移除了 "if st.current_player == st.last_raiser:" 逻辑。
-        # 对局将无限继续，直到有人 FOLD 或 COMPARE。
-        # ---------------------
-
+    # --- (核心修改) ---
     def step(self, action: Action):
-        # (step 的内部逻辑, FOLD, CALL, RAISE - 无修改)
         st = self.state
         if st.finished: raise RuntimeError("Game already finished")
         if action.player != st.current_player: raise ValueError("Not this player's turn")
@@ -134,9 +125,11 @@ class ZhajinhuaGame:
         if st.round_count > st.config.max_rounds:
             self._force_showdown()
             return
+
         if action.type == ActionType.LOOK:
             ps.looked = True
             return
+
         if action.type == ActionType.FOLD:
             ps.alive = False
             alive = self.alive_players()
@@ -147,6 +140,7 @@ class ZhajinhuaGame:
             else:
                 self._handle_next_turn()
             return
+
         if action.type == ActionType.CALL:
             pay = self.get_call_cost(action.player)
             if ps.chips <= pay:
@@ -156,6 +150,7 @@ class ZhajinhuaGame:
             st.pot += pay
             self._handle_next_turn()
             return
+
         if action.type == ActionType.RAISE:
             raise_an_increment = action.amount
             if raise_an_increment is None or raise_an_increment < st.config.min_raise:
@@ -173,7 +168,6 @@ class ZhajinhuaGame:
             self._handle_next_turn()
             return
 
-        # (step 的 COMPARE 逻辑 - 无修改)
         if action.type == ActionType.COMPARE:
             if action.target is None or not self.state.players[action.target].alive:
                 raise ValueError("Invalid target for comparison")
@@ -186,32 +180,62 @@ class ZhajinhuaGame:
             self._do_compare(action.player, action.target)
             return
 
+        # (新) "孤注一掷" 的逻辑
+        if action.type == ActionType.ALL_IN_SHOWDOWN:
+            pay = ps.chips  # 支付所有剩余筹码
+            ps.all_in = True
+            ps.chips -= pay
+            st.pot += pay
+            self._do_all_in_showdown(action.player)
+            return
+
     def _do_compare(self, p1: int, p2: int):
-        """(已修改) 执行比牌"""
         st = self.state
         res = compare_hands(st.players[p1].hand, st.players[p2].hand)
-
-        if res == 0:
-            loser = p1
-        else:
-            loser = p2 if res > 0 else p1
-
+        loser = p2 if res > 0 else p1  # (平局时 p1 输)
         st.players[loser].alive = False
-
         alive = self.alive_players()
         if len(alive) <= 1:
             st.finished = True
             st.winner = alive[0]
             self._payout()
         else:
-            # 回合从比牌者(p1)之后继续
             st.current_player = self.next_player(start_from=p1)
-            # --- (修改点 3) ---
-            # 移除了 "if st.current_player == st.last_raiser:" 逻辑。
-            # ---------------------
 
-    # (_force_showdown, _payout, export_state - 无修改)
+    # (新) "孤注一掷" 的比牌函数
+    def _do_all_in_showdown(self, challenger_id: int):
+        st = self.state
+        challenger_hand = st.players[challenger_id].hand
+
+        # 找到所有其他在局的对手
+        opponents = [i for i in self.alive_players() if i != challenger_id]
+
+        challenger_lost = False
+
+        for opp_id in opponents:
+            opp_hand = st.players[opp_id].hand
+            res = compare_hands(challenger_hand, opp_hand)
+
+            if res < 0:
+                # 挑战者输了
+                challenger_lost = True
+                break  # 停止比牌
+
+        if challenger_lost:
+            # 挑战者输了，挑战者淘汰，游戏继续
+            st.players[challenger_id].alive = False
+            self._handle_next_turn()
+        else:
+            # 挑战者全胜，赢得底池
+            for opp_id in opponents:
+                st.players[opp_id].alive = False
+
+            st.finished = True
+            st.winner = challenger_id
+            self._payout()
+
     def _force_showdown(self):
+        # (此函数无修改)
         st = self.state
         if st.finished: return
         alive_indices = self.alive_players()
@@ -232,11 +256,13 @@ class ZhajinhuaGame:
         self._payout()
 
     def _payout(self):
+        # (此函数无修改)
         if self.state.winner is not None:
             self.state.players[self.state.winner].chips += self.state.pot
             self.state.pot = 0
 
     def export_state(self, view_player: int | None = 0) -> dict:
+        # (此函数无修改)
         st = self.state
         players_info = []
         for i, ps in enumerate(st.players):
