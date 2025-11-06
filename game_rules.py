@@ -3,6 +3,7 @@
  Description: 核心牌型与数据结构
  (已修改：实现花色优先级)
  (已修改：增加 ALL_IN_SHOWDOWN 动作)
+ (已修改：增加 ACCUSE 动作)
 """
 import random
 from dataclasses import dataclass, field
@@ -123,8 +124,8 @@ class ActionType(IntEnum):
     RAISE = 3
     LOOK = 4
     COMPARE = 5
-    # (新)
-    ALL_IN_SHOWDOWN = 8  # 孤注一掷
+    ALL_IN_SHOWDOWN = 8
+    ACCUSE = 9  # (新) 指控
 
 
 @dataclass
@@ -133,15 +134,19 @@ class Action:
     type: ActionType
     amount: int | None = None
     target: int | None = None
+    # (新) target2 仅用于指控
+    target2: int | None = None
 
 
 @dataclass
 class GameConfig:
     num_players: int = 3
-    initial_chips: int = 300  # 默认筹码
+    initial_chips: int = 300
     base_bet: int = 10
     min_raise: int = 10
     compare_cost_multiplier: int = 2
+    # (新) 指控成本是跟注成本的 10 倍 (高风险)
+    accuse_cost_multiplier: int = 10
     max_rounds: int = 100
 
 

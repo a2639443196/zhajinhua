@@ -7,12 +7,14 @@ class ZhajinhuaGame:
     def __init__(self, config: GameConfig = GameConfig(),
                  initial_chips_list: List[int] | None = None,
                  start_player_id: int = 0):
+        # ... (_init_game 逻辑不变) ...
         self.config = config
         if initial_chips_list is None:
             initial_chips_list = [self.config.initial_chips] * self.config.num_players
         self.state = self._init_game(initial_chips_list, start_player_id)
 
     def _init_game(self, current_chips: List[int], start_player_id: int) -> GameState:
+        # ... (此函数无修改) ...
         deck = create_deck()
         players = []
         for i in range(self.config.num_players):
@@ -23,7 +25,7 @@ class ZhajinhuaGame:
                 p.chips -= self.config.base_bet
                 pot += self.config.base_bet
             else:
-                p.alive = False  # (修正) 筹码不足以支付底注的玩家应为 False
+                p.alive = False
                 p.all_in = True
                 pot += p.chips
                 p.chips = 0
@@ -44,6 +46,7 @@ class ZhajinhuaGame:
         return [i for i, p in enumerate(self.state.players) if p.alive]
 
     def next_player(self, start_from: int | None = None) -> int:
+        # ... (此函数无修改) ...
         if start_from is None:
             start_from = self.state.current_player
         n = len(self.state.players)
@@ -65,8 +68,15 @@ class ZhajinhuaGame:
         call_cost = self.get_call_cost(player_id)
         return call_cost * self.config.compare_cost_multiplier
 
+    # (新) 增加指控成本计算
+    def get_accuse_cost(self, player_id: int) -> int:
+        # 成本 = (基础跟注成本) * (指控倍率)
+        call_cost = self.get_call_cost(player_id)
+        return call_cost * self.config.accuse_cost_multiplier
+
     # --- (核心 Bug 修复) ---
     def available_actions(self, player: int) -> List[Tuple[ActionType, int]]:
+        # (已修改) 增加 ACCUSE
         st = self.state
         ps = st.players[player]
         if not ps.alive or st.finished or ps.all_in:
@@ -79,12 +89,13 @@ class ZhajinhuaGame:
 
         call_cost = self.get_call_cost(player)
         compare_cost = self.get_compare_cost(player)
+        accuse_cost = self.get_accuse_cost(player)  # (新)
 
         can_call = ps.chips >= call_cost
         can_compare = ps.chips >= compare_cost
+        can_accuse = ps.chips >= accuse_cost  # (新)
 
         if can_call:
-            # 筹码足够跟注
             actions.append((ActionType.CALL, call_cost))
 
             min_raise_an_increment = st.config.min_raise
@@ -95,22 +106,23 @@ class ZhajinhuaGame:
             if can_compare and len(self.alive_players()) >= 2:
                 actions.append((ActionType.COMPARE, compare_cost))
 
-        # (新) 独立的 ALL_IN_SHOWDOWN 检查
-        # 规则: 筹码不足以跟注 (OR) 筹码不足以比牌
-        if (ps.chips < call_cost) or (ps.chips < compare_cost):
-            # (确保我们不重复添加 CALL)
-            if not can_call:
-                # 如果不能 CALL，我们也不应该提供 CALL，只提供 ALL_IN
-                actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
+        # (新) 增加指控动作
+        # 必须至少有2个其他活跃玩家才能发起指控 (不含自己)
+        other_active_players = [i for i in self.alive_players() if i != player and not st.players[i].all_in]
+        if can_accuse and len(other_active_players) >= 2:
+            actions.append((ActionType.ACCUSE, accuse_cost))
 
-            # (Qwen3 的情况) 如果可以 CALL (200=200) 但不能 COMPARE (200<400)
+        # (新) 独立的 ALL_IN_SHOWDOWN 检查
+        if (ps.chips < call_cost) or (ps.chips < compare_cost):
+            if not can_call:
+                actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
             elif can_call and not can_compare:
-                # 我们也提供 ALL_IN 选项
                 actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
 
         return actions
 
     def _handle_next_turn(self):
+        # ... (此函数无修改) ...
         st = self.state
         active_players = [i for i in self.alive_players() if not st.players[i].all_in]
         if len(active_players) <= 1:
@@ -120,6 +132,8 @@ class ZhajinhuaGame:
 
     def step(self, action: Action):
         # (此函数无修改)
+        # 注意：我们不会在 step() 中处理 ACCUSE。
+        # ACCUSE 将被 game_controller 拦截。
         st = self.state
         if st.finished: raise RuntimeError("Game already finished")
         if action.player != st.current_player: raise ValueError("Not this player's turn")
@@ -136,10 +150,12 @@ class ZhajinhuaGame:
             return
 
         if action.type == ActionType.LOOK:
+            # ... (LOOK 逻辑) ...
             ps.looked = True
             return
 
         if action.type == ActionType.FOLD:
+            # ... (FOLD 逻辑) ...
             ps.alive = False
             alive = self.alive_players()
             if len(alive) <= 1:
@@ -151,6 +167,7 @@ class ZhajinhuaGame:
             return
 
         if action.type == ActionType.CALL:
+            # ... (CALL 逻辑) ...
             pay = self.get_call_cost(action.player)
             if ps.chips <= pay:
                 pay = ps.chips
@@ -161,6 +178,7 @@ class ZhajinhuaGame:
             return
 
         if action.type == ActionType.RAISE:
+            # ... (RAISE 逻辑) ...
             raise_an_increment = action.amount
             if raise_an_increment is None or raise_an_increment < st.config.min_raise:
                 raise ValueError(f"Raise increment must be at least {st.config.min_raise}")
@@ -178,6 +196,7 @@ class ZhajinhuaGame:
             return
 
         if action.type == ActionType.COMPARE:
+            # ... (COMPARE 逻辑) ...
             if action.target is None or not self.state.players[action.target].alive:
                 raise ValueError("Invalid target for comparison")
             pay = self.get_compare_cost(action.player)
@@ -190,6 +209,7 @@ class ZhajinhuaGame:
             return
 
         if action.type == ActionType.ALL_IN_SHOWDOWN:
+            # ... (ALL_IN_SHOWDOWN 逻辑) ...
             pay = ps.chips
             ps.all_in = True
             ps.chips -= pay
@@ -198,7 +218,7 @@ class ZhajinhuaGame:
             return
 
     def _do_compare(self, p1: int, p2: int):
-        # (此函数无修改)
+        # ... (此函数无修改) ...
         st = self.state
         res = compare_hands(st.players[p1].hand, st.players[p2].hand)
         loser = p2 if res > 0 else p1
@@ -212,7 +232,7 @@ class ZhajinhuaGame:
             st.current_player = self.next_player(start_from=p1)
 
     def _do_all_in_showdown(self, challenger_id: int):
-        # (此函数无修改)
+        # ... (此函数无修改) ...
         st = self.state
         challenger_hand = st.players[challenger_id].hand
         opponents = [i for i in self.alive_players() if i != challenger_id]
@@ -234,7 +254,7 @@ class ZhajinhuaGame:
             self._payout()
 
     def _force_showdown(self):
-        # (此函数无修改)
+        # ... (此函数无修改) ...
         st = self.state
         if st.finished: return
         alive_indices = self.alive_players()
@@ -255,13 +275,13 @@ class ZhajinhuaGame:
         self._payout()
 
     def _payout(self):
-        # (此函数无修改)
+        # ... (此函数无修改) ...
         if self.state.winner is not None:
             self.state.players[self.state.winner].chips += self.state.pot
             self.state.pot = 0
 
     def export_state(self, view_player: int | None = 0) -> dict:
-        # (此函数无修改)
+        # ... (此函数无修改) ...
         st = self.state
         players_info = []
         for i, ps in enumerate(st.players):
@@ -278,10 +298,6 @@ class ZhajinhuaGame:
         if view_player is not None and view_player == st.current_player and not st.finished:
             raw_actions = self.available_actions(view_player)
             for act_type, display_cost in raw_actions:
-                send_amount = None
-                if act_type == ActionType.RAISE:
-                    send_amount = st.config.min_raise
-                # (新) 修改为 (name, cost)
                 available_actions.append((act_type.name, display_cost))
         return {
             "finished": st.finished, "winner": st.winner, "pot": st.pot,
