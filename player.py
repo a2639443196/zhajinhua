@@ -5,6 +5,7 @@ import asyncio
 from typing import List, Dict, Callable, Awaitable
 from llm_client import LLMClient
 import pathlib
+import traceback  # (新) 导入 traceback
 
 BASE_DIR = pathlib.Path(__file__).parent.resolve()
 DECIDE_ACTION_PROMPT_PATH = BASE_DIR / "prompt/decide_action_prompt.txt"
@@ -31,30 +32,26 @@ class Player:
 
     # (已修改)
     async def create_persona(self,
-                             stream_start_cb: Callable[[str], Awaitable[None]],
                              stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
         """
         (已修改)
-        1. 移除此处的 stream_start_cb，由控制器统一打印。
-        2. 在出错时 *返回* 错误信息。
+        1. 只接收 stream_chunk_cb。
+        2. Controller 负责 stream_start 和 换行。
+        3. 在出错时 *返回* 错误信息。
         """
         template = self._read_file(CREATE_PERSONA_PROMPT_PATH)
         if not template:
-            return f"大家好，我是 {self.name}。(错误: 无法读取人设 Prompt)"
+            return f"(错误: 无法读取人设 Prompt)"
 
         prompt = template.format(self_name=self.name)
         messages = [{"role": "user", "content": prompt}]
-
-        # (新) 移除了这里的 stream_start_cb(f"【上帝(赛前介绍)】: [{self.name}]: ")
-        #    控制器将在收到 *返回* 的 intro_text 后再打印标题。
 
         try:
             full_intro = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=stream_chunk_cb  # 仍然流式传输 *内容*
+                stream_callback=stream_chunk_cb  # 只传递 chunk
             )
-            await stream_chunk_cb("\n")  # 确保流式传输后换行
 
             intro_text = full_intro.strip().replace("\n", " ")
             if not intro_text:
@@ -62,10 +59,7 @@ class Player:
             return intro_text
 
         except Exception as e:
-            # (新) *返回* 详细的错误信息，以便控制器打印。
-            error_msg = f"大家好... 我是 {self.name}。(创建人设时出错: {str(e)})"
-            # (我们仍然尝试流式传输错误，以防万一)
-            await stream_chunk_cb(f"\n{error_msg}\n")
+            error_msg = f"(创建人设时出错: {str(e)})"
             return error_msg
 
     # (已修改)
@@ -89,9 +83,9 @@ class Player:
                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
         """
         (已修改)
-        将所有逻辑移入 try/except 块，确保任何失败（Regex, JSON）
-        都会被内部捕获并返回一个安全的 FOLD JSON。
+        极大增强 except 块的日志记录能力。
         """
+        full_content_debug = ""  # (新) 用于在出错时记录
         try:
             template = self._read_file(DECIDE_ACTION_PROMPT_PATH)
             if not template:
@@ -124,8 +118,8 @@ class Player:
                 model=self.model_name,
                 stream_callback=stream_chunk_cb
             )
+            full_content_debug = full_content  # (新) 存储
 
-            # (新) 修改 Regex，使其更严格，只查找以 { 开头的 JSON
             json_match = re.search(r'```json\s*({[\s\S]*?})\s*```|\s*({[\s\S]*})', full_content)
 
             if json_match:
@@ -135,17 +129,38 @@ class Player:
                 if "action" in result and "reason" in result and "mood" in result:
                     return result
 
-            raise ValueError(f"LLM 未返回有效的 JSON。收到内容: {full_content[:100]}...")
+            raise ValueError(f"LLM 未返回有效的 JSON。")
 
         except Exception as e:
-            # (新) 捕获所有此函数内的错误
-            error_msg = f"LLM 解析失败: {str(e)}"
-            print(f"【上帝(警告)】: {self.name} 解析流式JSON失败: {str(e)}")
-            await stream_chunk_cb(f"\n[LLM 解析失败: {error_msg}]")
-            return {"action": "FOLD", "reason": error_msg, "target_name": None, "mood": "解析失败", "speech": None,
-                    "secret_message": None}
+            # --- (新) 增强的错误报告 ---
+            tb_str = traceback.format_exc()  # 获取完整的堆栈跟踪
 
-    # (新) 被告辩护
+            # 准备一个非常详细的错误信息
+            error_msg = f"""LLM 解析失败:
+
+            Exception Type: {type(e)}
+            Exception: {str(e)}
+
+            Full Content Received:
+            ---
+            {full_content_debug[:200]}...
+            ---
+
+            Traceback:
+            {tb_str}
+            """
+
+            # (新) 替换换行符，以便在 JSON 和日志中安全传输
+            error_msg_oneline = error_msg.replace("\n", " || ")
+
+            print(f"【上帝(警告)】: {self.name} 解析流式JSON失败: {error_msg_oneline}")
+            await stream_chunk_cb(f"\n[LLM 解析失败: {error_msg_oneline}]")
+
+            return {"action": "FOLD", "reason": error_msg_oneline, "target_name": None, "mood": "解析失败", "speech": None,
+                    "secret_message": None}
+            # --- 修复结束 ---
+
+    # (已修改)
     async def defend(self,
                      accuser_name: str,
                      partner_name: str,
@@ -178,7 +193,7 @@ class Player:
             await stream_chunk_cb(f"\n辩护时出错: {str(e)}\n")
             return f"辩护时出错: {str(e)}"
 
-    # (新) 陪审团投票
+    # (已修改)
     async def vote(self,
                    accuser_name: str,
                    target_name_1: str,
@@ -191,7 +206,7 @@ class Player:
 
         template = self._read_file(VOTE_PROMPT_PATH)
         if not template:
-            return "NOT_GUILTY"  # 默认
+            return "NOT_GUILTY"
 
         prompt = template.format(
             self_name=self.name,
@@ -238,8 +253,9 @@ class Player:
                       stream_chunk_cb: Callable[[str], Awaitable[None]]) -> (str, dict):
         """
         (已修改)
-        将 JSON 解析移入 try 块，确保返回安全
+        增强 reflect 的错误处理
         """
+        full_content_debug = ""  # (新)
         try:
             template = self._read_file(REFLECT_PROMPT_PATH)
             if not template:
@@ -261,10 +277,11 @@ class Player:
                 model=self.model_name,
                 stream_callback=lambda s: asyncio.sleep(0.001)
             )
+            full_content_debug = full_content  # (新)
 
             json_match = re.search(r'```json\s*({[\s\S]*?})\s*```|\s*({[\s\S]*})', full_content)
             if not json_match:
-                raise ValueError(f"LLM 未返回有效的复盘 JSON。收到: {full_content[:100]}...")
+                raise ValueError(f"LLM 未返回有效的复盘 JSON。")
 
             json_str = json_match.group(1) or json_match.group(2)
             result = json.loads(json_str)
@@ -276,6 +293,8 @@ class Player:
             return public_reflection, private_impressions
 
         except Exception as e:
-            error_msg = f"复盘时出错: {str(e)}"
+            # (新) 增强的错误报告
+            tb_str = traceback.format_exc()
+            error_msg = f"复盘时出错: {type(e)}: {str(e)} || Content: {full_content_debug[:100]}... || Traceback: {tb_str.replace_oneline()}"
             await stream_chunk_cb(f"\n{error_msg}\n")
             return f"({error_msg})", {}

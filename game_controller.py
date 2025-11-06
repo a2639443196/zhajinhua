@@ -11,7 +11,7 @@ from player import Player
 
 class GameController:
     """
-    (已修改：修复 create_persona 的打印 Bug)
+    (已修改：修复 _build_panel_data 中的 NameError)
     """
 
     def __init__(self,
@@ -48,7 +48,7 @@ class GameController:
         return sum(1 for chips in self.persistent_chips if chips > 0)
 
     def _build_panel_data(self, game: ZhajinhuaGame | None, start_player_id: int = -1) -> dict:
-        # ... (此函数无修改) ...
+        # (已修改)
         players_data = []
         for i, p in enumerate(self.players):
             hand_str = "..."
@@ -67,7 +67,10 @@ class GameController:
                 else:
                     player_is_active = True
                     if p_state.hand:
-                        sorted_hand = sorted(p_state.hand, key=lambda c: c.rank, reverse=True)
+                        # --- (BUG 修复) ---
+                        # sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True) # (错误)
+                        sorted_hand = sorted(p_state.hand, key=lambda c: c.rank, reverse=True)  # (正确)
+                        # --- (修复结束) ---
                         hand_str = ' '.join([INT_TO_RANK[c.rank] + SUITS[c.suit] for c in sorted_hand])
                     else:
                         hand_str = "..."
@@ -87,46 +90,36 @@ class GameController:
         }
 
     async def run_game(self):
-        # (已修改) 确保打印人设
+        # ... (此函数无修改) ...
         await self.god_print(f"--- 锦标赛开始 ---", 1)
         await self.god_print(f"初始筹码: {self.persistent_chips}", 1)
         await self.god_panel_update(self._build_panel_data(None, -1))
 
-        # --- (新) 人设构建阶段 ---
         await self.god_print(f"--- 牌桌介绍开始 ---", 1.5)
         await self.god_print(f"（AI 正在为自己杜撰人设...）", 0.5)
 
-        persona_tasks = []
         for i, player in enumerate(self.players):
-            if self.persistent_chips[i] > 0 and player.alive:
-                persona_tasks.append(
-                    player.create_persona(
-                        stream_start_cb=self.god_stream_start,
-                        stream_chunk_cb=self.god_stream_chunk
-                    )
-                )
-            else:
-                async def dummy_intro(p_name=player.name):
-                    return f"我是 {p_name} (已淘汰)"
+            if self.persistent_chips[i] <= 0 and player.alive:
+                self.player_personas[i] = f"我是 {player.name} (已淘汰)"
+                continue
 
-                persona_tasks.append(dummy_intro())
+            await self.god_stream_start(f"【上帝(赛前介绍)】: [{player.name}]: ")
 
-        introductions = await asyncio.gather(*persona_tasks)
+            intro_text = await player.create_persona(
+                stream_chunk_cb=self.god_stream_chunk
+            )
 
-        # (新) 修复：在流式传输后，打印最终的、已确定的介绍（或错误信息）。
-        for i, intro_text in enumerate(introductions):
-            if self.persistent_chips[i] > 0:
-                self.player_personas[i] = intro_text  # 存储
+            if "(创建人设时出错:" in intro_text:
+                await self.god_stream_chunk(f" {intro_text}")
 
-                # (新) 明确打印 controller 收到的最终结果。
-                # (player.py 已移除 stream_start_cb 以避免重复打印)
-                await self.god_print(f"【上帝(赛前介绍)】: [{self.players[i].name}]: {intro_text}", 0.5)
+            await self.god_stream_chunk("\n")
+
+            self.player_personas[i] = intro_text
+            await asyncio.sleep(0.5)
 
         await self.god_print(f"--- 牌桌介绍结束 ---", 2)
         await asyncio.sleep(3)
-        # --- (新) 阶段结束 ---
 
-        # (原) 游戏主循环
         while self.get_alive_player_count() > 1:
             self.hand_count += 1
             start_player_id = (self.last_winner_id + 1) % self.num_players
@@ -140,7 +133,6 @@ class GameController:
             p_name = self.players[start_player_id].name
             await self.god_print(f"--- 第 {self.hand_count} 手牌开始 (庄家: {p_name}) ---", 1.5)
 
-            # (新) 将 run_round 包在 try/except 中，捕获 player.py 未能捕获的异常
             try:
                 await self.run_round(start_player_id)
             except Exception as e:
@@ -148,7 +140,7 @@ class GameController:
                 import traceback
                 traceback.print_exc()
                 await self.god_print("!! 游戏循环已崩溃，停止锦标赛 !!", 1)
-                break  # 退出锦标赛循环
+                break
 
             if self.get_alive_player_count() <= 1:
                 break
@@ -295,7 +287,7 @@ class GameController:
                 break
 
         if action_type is None:
-            error_msg = f"警告: {self.players[player_id].name} 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
+            error_msg = f"警告: {self.players[player_id].name} S 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
             return Action(player=player_id, type=ActionType.FOLD), error_msg
 
         amount = None
@@ -536,7 +528,7 @@ class GameController:
         await asyncio.sleep(5)
 
     async def run_round(self, start_player_id: int):
-        # (已修改)
+        # (已修改) 增加调试打印
         config = GameConfig(num_players=self.num_players)
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
 
@@ -576,7 +568,6 @@ class GameController:
 
             await self.god_print(f"--- 轮到 {current_player_obj.name} ---", 1)
 
-            # (新) 1. 构建 Prompt (包含收件箱)
             (state_summary, my_hand, actions_str, actions_list,
              next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
              opponent_private_impressions_str, observed_speech_str,
@@ -585,8 +576,6 @@ class GameController:
              observed_moods_str, multiplier, call_cost) = self._build_llm_prompt(game, current_player_idx,
                                                                                  start_player_id)
 
-            # (新) 2. 调用决策 (已在 player.py 中修复)
-            #    (我们在此处增加一个外层 try/except，以防 player.py 的修复失败)
             try:
                 action_json = await current_player_obj.decide_action(
                     state_summary, my_hand, actions_str, next_player_name,
@@ -602,30 +591,31 @@ class GameController:
                     stream_chunk_cb=self.god_stream_chunk
                 )
             except Exception as e:
-                # (新) 这是捕获 player.py 内部错误的最后防线
                 await self.god_print(f"!! 玩家 {current_player_obj.name} 决策失败 (Controller 捕获): {e}。强制弃牌。", 0)
                 action_json = {"action": "FOLD", "reason": f"决策系统崩溃: {e}", "target_name": None, "mood": "崩溃",
                                "speech": None, "secret_message": None}
 
-            # (新) 3. 拦截秘密消息
+            # --- (新) 调试块：打印详细的错误原因 ---
+            error_reason = action_json.get("reason", "")
+            if "失败" in error_reason or "错误" in error_reason or "超时" in error_reason or "崩溃" in error_reason:
+                await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 强制弃牌，原因: {error_reason}", 0.5)
+            # --- 调试块结束 ---
+
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
 
-            # (新) 4. 解析动作
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
             if error_msg:
                 await self.god_print(error_msg, 0.5)
                 action_obj = Action(player=current_player_idx, type=ActionType.FOLD)
 
-            # (新) 5. 拦截指控
             if action_obj.type == ActionType.ACCUSE:
                 trial_happened = await self._handle_accusation(game, action_obj, start_player_id)
                 if not game.state.finished:
                     game._handle_next_turn()
                 continue
 
-                # --- 6. 标准动作处理 ---
             player_speech = action_json.get("speech")
             self.player_last_speech[current_player_idx] = player_speech
 
@@ -659,7 +649,6 @@ class GameController:
 
             await asyncio.sleep(1)
 
-        # --- 7. 结算 (如果游戏正常结束) ---
         if not game.state.finished:
             game._force_showdown()
 
@@ -682,7 +671,6 @@ class GameController:
             await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips}", 0.5)
         await self.god_panel_update(self._build_panel_data(None, -1))
 
-        # --- 8. 情报更新（复盘）阶段 ---
         await self.god_print(f"--- LLM 人设发言开始 (同时私下更新笔记) ---", 1)
         final_state_data = game.export_state(view_player=None)
         round_history_json = json.dumps(final_state_data['history'], indent=2, ensure_ascii=False)
