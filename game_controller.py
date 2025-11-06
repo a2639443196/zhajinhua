@@ -306,6 +306,13 @@ class GameController:
                 action_type = ActionType[action_name]
                 break
 
+        if action_type is None and action_name == "LOOK":
+            # 特殊处理：如果玩家已经看过牌，LLM 仍然可能再次选择 LOOK。
+            # 这种情况下不应强制弃牌，而是允许其作为一次“无效”的再看牌操作。
+            player_state = game.state.players[player_id]
+            if player_state.looked:
+                action_type = ActionType.LOOK
+
         if action_type is None:
             error_msg = f"警告: {self.players[player_id].name} S 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
             return Action(player=player_id, type=ActionType.FOLD), error_msg
