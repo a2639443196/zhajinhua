@@ -3,35 +3,168 @@
     "name": "换牌卡",
     "type": "functional",
     "cost_estimate": 800,
-    "description": "允许你在发牌后更换一张手牌。高风险，高回报。",
+    "description": "允许你在发牌后更换一张手牌，适合微调边缘牌力。",
     "auction_weight": 10
   },
   "ITM_002": {
     "name": "窥牌镜",
     "type": "functional",
     "cost_estimate": 1200,
-    "description": "可短暂查看一名对手的一张暗牌（系统将通过密信告诉你）。",
+    "description": "可短暂查看一名对手的一张暗牌 (需指定目标与可选牌位)。",
     "auction_weight": 8
   },
   "ITM_003": {
     "name": "锁筹卡",
     "type": "functional",
     "cost_estimate": 1500,
-    "description": "暂时禁止一名对手在其下一轮行动时执行 'RAISE' 动作。",
+    "description": "暂时禁止一名对手在其下一次行动中执行 RAISE。",
+    "auction_weight": 6
+  },
+  "ITM_004": {
+    "name": "双倍卡",
+    "type": "functional",
+    "cost_estimate": 2000,
+    "description": "本局若获胜，自动额外获取等同于底池的系统奖金。",
+    "auction_weight": 4
+  },
+  "ITM_005": {
+    "name": "免死金牌",
+    "type": "functional",
+    "cost_estimate": 2400,
+    "description": "在比牌失败时可强行作废结果，双方留待下轮再战。",
+    "auction_weight": 3
+  },
+  "ITM_006": {
+    "name": "偷看卡",
+    "type": "functional",
+    "cost_estimate": 1000,
+    "description": "随机窥看一名对手任意一张手牌，存在被防御道具拦截的风险。",
+    "auction_weight": 9
+  },
+  "ITM_007": {
+    "name": "调牌符",
+    "type": "functional",
+    "cost_estimate": 1600,
+    "description": "将自己的三张手牌重新洗发一次，重建整副命运。",
     "auction_weight": 5
   },
-  "ITR_001": {
+  "ITM_008": {
+    "name": "顺手换牌",
+    "type": "functional",
+    "cost_estimate": 1800,
+    "description": "交换自己与指定玩家的一张手牌，可自选或随机。",
+    "auction_weight": 4
+  },
+  "ITM_009": {
+    "name": "免比符",
+    "type": "functional",
+    "cost_estimate": 1500,
+    "description": "本局被点名比牌时可拒绝一次，对手投入的比牌成本作废。",
+    "auction_weight": 6
+  },
+  "ITM_010": {
+    "name": "全开卡",
+    "type": "functional",
+    "cost_estimate": 2200,
+    "description": "立即强制所有仍在局内的玩家亮出手牌。",
+    "auction_weight": 2
+  },
+  "ITM_011": {
+    "name": "反转卡",
+    "type": "functional",
+    "cost_estimate": 2100,
+    "description": "使自己参与的下一次比牌结果取反 (输变赢、赢变输)。",
+    "auction_weight": 3
+  },
+  "ITM_012": {
+    "name": "压注加倍符",
+    "type": "functional",
+    "cost_estimate": 1900,
+    "description": "立即完成一次跟注，并强制下一名行动玩家至少加倍下注。",
+    "auction_weight": 4
+  },
+  "ITM_013": {
+    "name": "定输免赔",
+    "type": "functional",
+    "cost_estimate": 900,
+    "description": "若本手落败，可退回一半底注 (向上取整，最低 20)。",
+    "auction_weight": 9
+  },
+  "ITM_014": {
+    "name": "重发令",
+    "type": "functional",
+    "cost_estimate": 2600,
+    "description": "立即取消当前牌局并重新发牌，所有行动重置。",
+    "auction_weight": 2
+  },
+  "ITM_015": {
     "name": "护身符",
-    "type": "interactive",
-    "cost_estimate": 700,
-    "description": "使你自己两轮内不被指定为 'COMPARE' (比牌) 的目标。",
+    "type": "defense",
+    "cost_estimate": 1400,
+    "description": "使自己两轮内不被指定为比牌目标。",
+    "auction_weight": 7
+  },
+  "ITM_016": {
+    "name": "反侦测烟雾",
+    "type": "defense",
+    "cost_estimate": 1100,
+    "description": "一轮内使所有窥探类道具对你失效。",
+    "auction_weight": 8
+  },
+  "ITM_017": {
+    "name": "屏蔽卡",
+    "type": "defense",
+    "cost_estimate": 1300,
+    "description": "两轮内不受任何窥探类道具影响。",
+    "auction_weight": 7
+  },
+  "ITM_018": {
+    "name": "隐形符",
+    "type": "defense",
+    "cost_estimate": 800,
+    "description": "暂时隐藏自己的筹码数量，让对手无法掌握筹码信息。",
     "auction_weight": 10
   },
-  "VIS_001": {
-    "name": "烟花",
-    "type": "visual",
-    "cost_estimate": 250,
-    "description": "胜利时触发全屏庆祝动画。",
-    "auction_weight": 20
+  "ITM_019": {
+    "name": "护运珠",
+    "type": "defense",
+    "cost_estimate": 1700,
+    "description": "未来三手中若连续拿到烂牌，将强制重发以打断霉运。",
+    "auction_weight": 4
+  },
+  "ITM_020": {
+    "name": "护牌罩",
+    "type": "defense",
+    "cost_estimate": 2000,
+    "description": "被比牌判负时自动改判为平局，仅能抵消一次。",
+    "auction_weight": 3
+  },
+  "ITM_021": {
+    "name": "反窥镜",
+    "type": "defense",
+    "cost_estimate": 1600,
+    "description": "有人窥探你时将其反弹并公开对方身份。",
+    "auction_weight": 5
+  },
+  "ITM_022": {
+    "name": "幸运币",
+    "type": "buff",
+    "cost_estimate": 1500,
+    "description": "使用后下一手起牌时，系统会尝试为你调优一张弱牌。",
+    "auction_weight": 6
+  },
+  "ITM_023": {
+    "name": "财神符",
+    "type": "buff",
+    "cost_estimate": 1800,
+    "description": "未来三局内，只要赢牌就能额外获得系统奖金。",
+    "auction_weight": 5
+  },
+  "ITM_024": {
+    "name": "连胜加成",
+    "type": "buff",
+    "cost_estimate": 2000,
+    "description": "记录你的连胜，当连赢三局时再额外获得一份底池。",
+    "auction_weight": 4
   }
 }

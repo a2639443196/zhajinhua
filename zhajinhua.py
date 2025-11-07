@@ -1,14 +1,16 @@
 from game_rules import *
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Callable, Dict
 
 
 class ZhajinhuaGame:
     def __init__(self, config: GameConfig = GameConfig(),
                  initial_chips_list: List[int] | None = None,
-                 start_player_id: int = 0):
+                 start_player_id: int = 0,
+                 event_listeners: Optional[Dict[str, Callable[..., Optional[dict]]]] = None):
         # ... (_init_game 逻辑不变) ...
         self.config = config
+        self._event_listeners: Dict[str, Callable[..., Optional[dict]]] = event_listeners or {}
         if initial_chips_list is None:
             initial_chips_list = [self.config.initial_chips] * self.config.num_players
         self.state = self._init_game(initial_chips_list, start_player_id)
@@ -52,6 +54,16 @@ class ZhajinhuaGame:
             current_player=start_player_id,
             last_raiser=start_player_id,
         )
+
+    def set_event_listener(self, event_name: str,
+                           callback: Callable[..., Optional[dict]]) -> None:
+        self._event_listeners[event_name] = callback
+
+    def _dispatch_event(self, event_name: str, **kwargs) -> Optional[dict]:
+        callback = self._event_listeners.get(event_name)
+        if not callback:
+            return None
+        return callback(**kwargs)
 
     def alive_players(self) -> List[int]:
         return [i for i, p in enumerate(self.state.players) if p.alive]
@@ -108,16 +120,26 @@ class ZhajinhuaGame:
         can_compare = ps.chips >= compare_cost
         can_accuse = ps.chips >= accuse_cost  # (新)
 
-        if can_call:
+        forced_double = "force_double_raise" in active_debuffs
+
+        if can_call and not forced_double:
             actions.append((ActionType.CALL, call_cost))
 
-            min_raise_an_increment = st.config.min_raise
-            min_raise_cost = min_raise_an_increment * 2 if ps.looked else min_raise_an_increment
-            if ps.chips > call_cost + min_raise_cost and "lock_raise" not in active_debuffs:
+        min_raise_an_increment = st.config.min_raise
+        min_raise_cost = min_raise_an_increment * 2 if ps.looked else min_raise_an_increment
+
+        if forced_double:
+            required_increment = max(min_raise_cost, call_cost)
+            if ps.chips > call_cost + required_increment and "lock_raise" not in active_debuffs:
+                actions.append((ActionType.RAISE, call_cost + required_increment))
+            elif ps.chips > 0:
+                actions.append((ActionType.ALL_IN_SHOWDOWN, ps.chips))
+        else:
+            if can_call and ps.chips > call_cost + min_raise_cost and "lock_raise" not in active_debuffs:
                 actions.append((ActionType.RAISE, call_cost + min_raise_cost))
 
-            if can_compare and len(self.alive_players()) >= 2:
-                actions.append((ActionType.COMPARE, compare_cost))
+        if can_call and can_compare and len(self.alive_players()) >= 2 and not forced_double:
+            actions.append((ActionType.COMPARE, compare_cost))
 
         # (新) 增加指控动作
         # 必须至少有2个其他活跃玩家才能发起指控 (不含自己)
@@ -235,6 +257,28 @@ class ZhajinhuaGame:
         st = self.state
         res = compare_hands(st.players[p1].hand, st.players[p2].hand)
         loser = p2 if res > 0 else p1
+
+        hook_response = self._dispatch_event(
+            "before_compare_resolution",
+            attacker=p1,
+            defender=p2,
+            result=res,
+            loser=loser
+        ) or {}
+
+        action = hook_response.get("action") if isinstance(hook_response, dict) else None
+        if action == "cancel" or action == "draw":
+            st.current_player = self.next_player(start_from=p1)
+            return
+        if action == "reverse":
+            loser = p1 if loser == p2 else p2
+        if isinstance(hook_response, dict) and "loser" in hook_response:
+            loser = hook_response["loser"]
+
+        if loser is None:
+            st.current_player = self.next_player(start_from=p1)
+            return
+
         st.players[loser].alive = False
         alive = self.alive_players()
         if len(alive) <= 1:
