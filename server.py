@@ -47,7 +47,7 @@ class ConnectionManager:
         await self._broadcast_json({"type": "status", "running": running})
 
     async def broadcast_panel_data(self, data: dict):
-        await self.broadcast_json({"type": "panel_update", "data": data})
+        await self._broadcast_json({"type": "panel_update", "data": data}) # <-- 正确：有下划线
 
     async def _broadcast_json(self, json_message: dict):
         disconnected = set()
