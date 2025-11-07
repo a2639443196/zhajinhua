@@ -559,38 +559,35 @@ class GameController:
         if cheat_type == "SWAP_RANK":
             base += 0.08
 
-        # --- 3. [V2 经验风险修正] ---
-        # 我们使用 55.0 (旧的门槛) 作为“标准线”
-        # 低于 55.0 将受到严厉惩罚 (增加概率)
-        # 高于 55.0 将获得奖励 (降低概率)
-
+        # 3. [V2 经验风险修正] (逻辑不变)
+        # (我们使用 55.0 作为“标准线”)
         experience_modifier = 0.0
-        # (例如 Ling: 12.0 - 55.0 = -43.0)
         experience_gap = player_obj.experience - self.CHEAT_SWAP_REQUIRED_EXPERIENCE
 
         if experience_gap < 0:
             # 经验不足：施加严厉惩罚 (最高可达 +50%)
-            # (e.g., Ling: abs(-43.0) / 55.0 = 0.78)
             penalty_ratio = min(abs(experience_gap) / self.CHEAT_SWAP_REQUIRED_EXPERIENCE, 1.0)
-            # (e.g., Ling: 0.78 * 0.50 = +39% 的额外被抓率)
             experience_modifier = penalty_ratio * 0.50
         else:
             # 经验充足：提供减免 (最高可达 -40%)
-            # (假设 130.0 是“宗师”线)
             mitigation_ratio = min(experience_gap / (130.0 - self.CHEAT_SWAP_REQUIRED_EXPERIENCE), 1.0)
-            # (e.g., -40% 的被抓率)
             experience_modifier = mitigation_ratio * -0.40
 
-        # 4. 压力惩罚
+        # 4. 压力惩罚 (逻辑不变)
         pressure_penalty = min(0.25, player_obj.current_pressure * 0.45)
 
-        # 5. 低筹码惩罚 (绝望惩罚)
+        # 5. 低筹码惩罚 (逻辑不变)
         low_stack_penalty = 0.0
         if chips < 300:
             low_stack_penalty = 0.2 + min(0.3, (300 - max(chips, 0)) / 400.0)
 
-        # 最终概率 = 基础 + 经验修正(可能为负) + 压力惩罚 + 低筹码惩罚
-        probability = base + experience_modifier + pressure_penalty + low_stack_penalty
+        # 6. [您的要求 1] 次数惩罚 (新 V3)
+        # (player_obj.cheat_attempts 是作弊总次数)
+        # 每次尝试 +1.5% 概率, 封顶 +20%
+        frequency_penalty = min(player_obj.cheat_attempts * 0.015, 0.20)
+
+        # 最终概率 = 基础 + 经验修正 + 压力 + 低筹码 + 次数惩罚
+        probability = base + experience_modifier + pressure_penalty + low_stack_penalty + frequency_penalty
 
         return max(0.05, min(0.95, probability))
 

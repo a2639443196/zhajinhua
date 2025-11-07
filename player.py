@@ -207,19 +207,41 @@ class Player:
         self.experience = max(0.0, self.experience + base_gain)
 
     def update_experience_from_cheat(self, success: bool, cheat_type: str, context: Optional[dict] = None) -> None:
-        """(新) 作弊结果反馈经验。"""
-        self.cheat_attempts += 1
-        delta = 4.0 if success else -6.0
-        if not success and self.experience < 40:
-            delta -= 2.0  # 新手失败打击更大
-        if cheat_type.upper() == "SWAP_SUIT" and success:
-            delta += 1.5
-        if cheat_type.upper() == "SWAP_RANK" and success:
-            delta += 2.0
+        """(新 V3) 作弊结果反馈经验，包含消耗和次数奖励。"""
+        self.cheat_attempts += 1  # 无论成败，总次数+1
+
         if success:
             self.cheat_success += 1
-        elif context and context.get("detected"):
-            delta -= 2.5
+
+            # 1. [您的要求 3] 成功作弊的固定消耗
+            # 无论如何，成功作弊都会消耗 8.0 经验值
+            CHEAT_SUCCESS_COST = 8.0
+
+            # 2. [您的要求 2] 成功作弊的收益 (基础 + 类型)
+            base_gain = 5.0  # 基础成功收益
+
+            # (保留 V2 逻辑：不同类型收益不同)
+            if cheat_type.upper() == "SWAP_RANK":
+                base_gain += 2.0  # 换点数收益更高
+            elif cheat_type.upper() == "SWAP_SUIT":
+                base_gain += 1.5
+
+            # [您的要求 2] 次数越多，成功收益越高 (奖励"千王")
+            # (self.cheat_success 是成功次数)
+            # 每次成功额外 +0.75 经验，封顶 10.0
+            frequency_bonus = min(self.cheat_success * 0.75, 10.0)
+
+            # 总 delta = (收益 + 次数奖励) - 消耗
+            delta = (base_gain + frequency_bonus) - CHEAT_SUCCESS_COST
+
+        else:
+            # 3. 失败的惩罚 (逻辑不变)
+            delta = -6.0  # 基础失败惩罚
+            if self.experience < 40:
+                delta -= 2.0  # 新手失败打击更大
+            if context and context.get("detected"):
+                delta -= 2.5  # 被当场抓住的额外惩罚
+
         self.experience = max(0.0, self.experience + delta)
 
     def update_experience_from_win(self, pot_at_showdown: int):
