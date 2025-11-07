@@ -341,6 +341,78 @@
             letter-spacing: 0.05em;
         }
 
+        .log-body {
+            display: flex;
+            gap: 18px;
+            align-items: flex-start;
+        }
+
+        .inventory-panel {
+            flex: 0 0 220px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        .inventory-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            letter-spacing: 0.08em;
+        }
+
+        .inventory-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .inventory-player {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+
+        .inventory-player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.95rem;
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .inventory-count {
+            font-size: 0.85rem;
+            color: var(--accent);
+        }
+
+        .inventory-items {
+            margin: 0;
+            padding-left: 18px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .inventory-item {
+            line-height: 1.5;
+        }
+
+        .inventory-empty {
+            margin: 0;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
         #log-container {
             max-height: 60vh;
             overflow-y: auto;
@@ -348,6 +420,7 @@
             flex-direction: column;
             gap: 10px;
             padding-right: 6px;
+            flex: 1 1 0;
         }
 
         .log-message {
@@ -394,6 +467,15 @@
 
             .panel-grid {
                 grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            }
+
+            .log-body {
+                flex-direction: column;
+            }
+
+            .inventory-panel {
+                width: 100%;
+                max-height: none;
             }
         }
 
@@ -456,7 +538,13 @@
                     <span>上帝视角日志</span>
                     <span id="log-count">0 条</span>
                 </div>
-                <div id="log-container"></div>
+                <div class="log-body">
+                    <aside class="inventory-panel">
+                        <div class="inventory-title">参赛者背包</div>
+                        <div id="inventory-container" class="inventory-list"></div>
+                    </aside>
+                    <div id="log-container"></div>
+                </div>
             </section>
         </main>
     </div>
@@ -464,6 +552,7 @@
     <script>
         const statusDiv = document.getElementById("status");
         const logContainer = document.getElementById("log-container");
+        const inventoryContainer = document.getElementById("inventory-container");
         const logCountSpan = document.getElementById("log-count");
         const startButton = document.getElementById("start-button");
         const stopButton = document.getElementById("stop-button");
@@ -578,7 +667,9 @@
             const playersDiv = document.getElementById("panel-players");
             playersDiv.innerHTML = "";
 
-            (data.players || []).forEach(player => {
+            const players = data.players || [];
+
+            players.forEach(player => {
                 const card = document.createElement("div");
                 card.className = "player-card";
                 if (player.chips <= 0) {
@@ -647,6 +738,49 @@
                 card.appendChild(pressureRow);
 
                 playersDiv.appendChild(card);
+            });
+
+            renderInventory(players);
+        }
+
+        function renderInventory(players = []) {
+            if (!inventoryContainer) return;
+            inventoryContainer.innerHTML = "";
+
+            players.forEach(player => {
+                const block = document.createElement("div");
+                block.className = "inventory-player";
+
+                const header = document.createElement("div");
+                header.className = "inventory-player-header";
+                header.textContent = player.name;
+
+                const count = document.createElement("span");
+                count.className = "inventory-count";
+                count.textContent = `x${player.inventory_count || 0}`;
+                header.appendChild(count);
+
+                block.appendChild(header);
+
+                const items = Array.isArray(player.inventory) ? player.inventory : [];
+                if (items.length === 0) {
+                    const empty = document.createElement("p");
+                    empty.className = "inventory-empty";
+                    empty.textContent = "暂无道具";
+                    block.appendChild(empty);
+                } else {
+                    const list = document.createElement("ul");
+                    list.className = "inventory-items";
+                    items.forEach(item => {
+                        const li = document.createElement("li");
+                        li.className = "inventory-item";
+                        li.textContent = item;
+                        list.appendChild(li);
+                    });
+                    block.appendChild(list);
+                }
+
+                inventoryContainer.appendChild(block);
             });
         }
 
