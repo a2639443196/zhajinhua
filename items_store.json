@@ -1,0 +1,37 @@
+{
+  "ITM_001": {
+    "name": "换牌卡",
+    "type": "functional",
+    "cost_estimate": 800,
+    "description": "允许你在发牌后更换一张手牌。高风险，高回报。",
+    "auction_weight": 10
+  },
+  "ITM_002": {
+    "name": "窥牌镜",
+    "type": "functional",
+    "cost_estimate": 1200,
+    "description": "可短暂查看一名对手的一张暗牌（系统将通过密信告诉你）。",
+    "auction_weight": 8
+  },
+  "ITM_003": {
+    "name": "锁筹卡",
+    "type": "functional",
+    "cost_estimate": 1500,
+    "description": "暂时禁止一名对手在其下一轮行动时执行 'RAISE' 动作。",
+    "auction_weight": 5
+  },
+  "ITR_001": {
+    "name": "护身符",
+    "type": "interactive",
+    "cost_estimate": 700,
+    "description": "使你自己两轮内不被指定为 'COMPARE' (比牌) 的目标。",
+    "auction_weight": 10
+  },
+  "VIS_001": {
+    "name": "烟花",
+    "type": "visual",
+    "cost_estimate": 250,
+    "description": "胜利时触发全屏庆祝动画。",
+    "auction_weight": 20
+  }
+}
