@@ -8,12 +8,12 @@ from game_controller import GameController
 
 # --- 1. LLM 玩家配置 (无修改) ---
 player_configs = [
-    {"name": "Doubao", "model": "doubao-seed-1-6-lite-251015"},
-    {"name": "书生浦语", "model": "internlm/internlm2_5-7b-chat"},
-    {"name": "baidu", "model": "baidu/ERNIE-4.5-300B-A47B"},
+    {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
+    {"name": "Kwaipilot", "model": "Kwaipilot/KAT-Dev"},
+    {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
-    {"name": "deepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
-    {"name": "LingMa", "model": "inclusionAI/Ling-1T"},
+    {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
+    {"name": "Ling", "model": "inclusionAI/Ling-1T"},
 ]
 
 
