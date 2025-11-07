@@ -389,6 +389,7 @@ class Player:
                             observed_speech_str: str,
                             received_secret_messages: str,
                             player_inventory: str,
+                            field_item_intel: str,  # (新) 添加
                             min_raise_increment: int,
                             dealer_name: str,
                             observed_moods: str,
@@ -421,6 +422,7 @@ class Player:
                 observed_speech_str=observed_speech_str,
                 received_secret_messages=received_secret_messages,
                 player_inventory=player_inventory,
+                field_item_intel=field_item_intel,  # (新) 添加
                 min_raise_increment=min_raise_increment,
                 dealer_name=dealer_name,
                 observed_moods=observed_moods,

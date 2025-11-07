@@ -149,6 +149,10 @@ class GameController:
         self.CHEAT_ALERT_INCREASE = 25.0  # (新) 每次抓获增加 25 点
         self.CHEAT_ALERT_DECAY_PER_HAND = 3.0  # (新) 每手牌降低 3 点
         self.auction_min_raise_floor = 20  # (新) 拍卖中最小的加注底限 (例如 20)
+        # --- [修复 19.1 (修改版)] 泄密机制 *基础* 概率 ---
+        # (最终概率将受经验和警戒值影响)
+        self.LEAK_SECRET_MESSAGE_BASE = 0.20  # 密信基础泄露率
+        self.LEAK_CHEAT_MOVE_BASE = 0.25  # 作弊基础泄露率
 
         try:
             with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
@@ -615,7 +619,7 @@ class GameController:
         last_raise_amount = 1
         is_first_bid_placed = False
 
-        max_auction_rounds = 5
+        max_auction_rounds = 4
         round_count = 0
 
         while round_count < max_auction_rounds and len(active_bidders) > 1:
@@ -750,16 +754,21 @@ class GameController:
             other_chips = self.persistent_chips[other_id]
             loan_info = other_player.loan_data
             loan_str = "有债务" if loan_info else "无债务"
+            # --- [修复 18.1] 拍卖时显示对手道具详情 ---
+            inventory_names = [self.item_catalog.get(item_id, {}).get("name", item_id) for item_id in
+                               other_player.inventory]
+            inventory_str = "无" if not inventory_names else ", ".join(inventory_names)
             other_lines.append(
-                f"  - {other_player.name}: 筹码 {other_chips}, 道具 {len(other_player.inventory)} 件, {loan_str}"
+                f"  - {other_player.name}: 筹码 {other_chips}, 道具=[{inventory_str}], {loan_str}"
             )
+            # --- [修复 18.1 结束] ---
         other_status = "\n".join(other_lines) if other_lines else "暂无竞争对手。"
 
         # ( ... 省略 my_assets_str 和 item_value 的构建 ...)
         current_chips = self.persistent_chips[player_id]
         _base, distribution, _total = self._build_ante_distribution()
         ante_cost = distribution[player_id]
-        safety_buffer = max(ante_cost * 3, 20)
+        safety_buffer = max(ante_cost * 3, 350)
         max_bid_allowed = max(0, current_chips - safety_buffer)
         my_assets_str = f"""- 你的总筹码: {current_chips}
     - 你的背包: {inventory_str}
@@ -1040,6 +1049,13 @@ class GameController:
             if target_id is None or not game.state.players[target_id].alive:
                 await self.god_print("【系统提示】顺手换牌需要指定一名仍在牌局中的目标。", 0.5)
                 return None
+
+            # --- [修复 20.1] 阻止 AI 将自己作为目标 ---
+            if target_id == player_id:
+                await self.god_print(f"【系统提示】{player.name} 试图使用“顺手换牌”与自己换牌，操作无效。", 0.5)
+                return None  # 阻止行动，不消耗道具
+            # --- [修复 20.1 结束] ---
+
             target_state = game.state.players[target_id]
             if not player_state.hand or not target_state.hand:
                 await self.god_print("【系统提示】双方手牌不足，无法交换。", 0.5)
@@ -1604,6 +1620,18 @@ class GameController:
         dealer_name = self.players[start_player_id].name
         multiplier = 2 if ps.looked else 1
 
+        # --- [修复 18.2] 构建全场道具情报 ---
+        field_item_intel_lines = []
+        for i, p in enumerate(self.players):
+            if i == player_id or not p.inventory:  # 跳过自己和空背包
+                continue
+            inventory_names = [self.item_catalog.get(item_id, {}).get("name", item_id) for item_id in p.inventory]
+            inventory_str = ", ".join(inventory_names)
+            field_item_intel_lines.append(f"  - {p.name} 持有: [{inventory_str}]")
+
+        field_item_intel_str = "\n".join(field_item_intel_lines) if field_item_intel_lines else "场上暂无其他道具。"
+        # --- [修复 18.2 结束] ---
+
         player_obj.update_pressure_snapshot(ps.chips, call_cost)
         my_persona_str = f"你正在扮演: {self.player_personas.get(player_id, '(暂无)')}"
         my_persona_str += f"\n【你的牌局经验】{player_obj.get_experience_summary()}"
@@ -1650,20 +1678,27 @@ class GameController:
 
         # --- [修复 17.1 (修正版) 结束] ---
 
+        # --- [修复 21.1] 向 AI 背包添加道具描述 ---
         inventory_display = []
         for item_id in player_obj.inventory:
-            item_info = self.item_catalog.get(item_id)
-            if item_info:
-                inventory_display.append(f"{item_info.get('name', item_id)} ({item_id})")
-            else:
-                inventory_display.append(item_id)
+            item_info = self.item_catalog.get(item_id, {})
+
+            item_name = item_info.get('name', item_id)
+            # (新) 从 items_store.json 获取描述
+            item_desc = item_info.get('description', '效果未知')
+
+            # (新) 将描述添加到提示中
+            inventory_display.append(f"  - {item_name} ({item_id}): {item_desc}")
+
         inventory_str = "空" if not inventory_display else "\n".join(inventory_display)
+        # --- [修复 21.1 结束] ---
 
         return (
             "\n".join(state_summary_lines), my_hand, available_actions_str, available_actions_tuples,
             next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
             opponent_private_impressions_str, observed_speech_str,
             received_secret_messages_str, inventory_str,
+            field_item_intel_str,  # (新) 在 inventory_str 之后添加
             min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost,
             table_seating_str, opponent_reference_str
         )
@@ -1847,6 +1882,54 @@ class GameController:
 
         return Action(player=player_id, type=action_type, amount=amount, target=target, target2=target2), ""
 
+    async def _leak_information(self, game: ZhajinhuaGame, leak_message: str, base_probability: float,
+                                # (新) 必须传入“行动者”的 ID
+                                actor_id: int,
+                                *exclude_player_ids: int):
+        """
+        (新) 泄密辅助函数。
+        (已修改：泄露概率受“行动者经验”和“全局警戒值”动态影响)
+        """
+
+        # --- [修复 20.1] 动态计算泄露概率 ---
+        try:
+            actor = self.players[actor_id]
+            actor_experience = actor.experience
+        except IndexError:
+            actor_experience = 0.0
+
+        # 1. 经验修正 (经验越高，越不容易泄露)
+        # (例如：经验值 100 时，降低 15% 的泄露概率)
+        experience_mitigation = min(0.15, (actor_experience / 100.0) * 0.15)
+
+        # 2. 警戒值修正 (警戒值越高，越容易泄露)
+        # (例如：警戒值 100 时，增加 30% 的泄露概率)
+        alert_penalty = min(0.30, (self.global_alert_level / 100.0) * 0.30)
+
+        # 3. 最终概率
+        final_leak_prob = base_probability - experience_mitigation + alert_penalty
+        final_leak_prob = max(0.05, min(0.80, final_leak_prob))  # 确保概率在 5% 到 80% 之间
+
+        if random.random() >= final_leak_prob:
+            return  # 本次未触发泄密
+        # --- [修复 20.1 结束] ---
+
+        # 找出所有“目击者”(活着的，且不是作弊者或密谋参与者)
+        witnesses = [
+            i for i, p in enumerate(game.state.players)
+            if p.alive and not p.all_in and i not in exclude_player_ids
+        ]
+
+        if not witnesses:
+            return  # 没有目击者
+
+        witness_id = random.choice(witnesses)
+        witness_name = self.players[witness_id].name
+
+        self._append_system_message(witness_id, f"【!! 绝密情报 !!】{leak_message}")
+
+        await self.god_print(f"【上帝(泄密)】: 一条情报 (P={final_leak_prob:.1%}) 已秘密泄露给 {witness_name}。", 0.5)
+
     async def _handle_secret_message(self, game: Optional[ZhajinhuaGame], sender_id: int, message_json: dict):
         # ... (此函数无修改) ...
         target_name = message_json.get("target_name")
@@ -1892,6 +1975,18 @@ class GameController:
 
         self.secret_message_log.append((self.hand_count, sender_id, target_id, message))
         await self.god_print(f"【上帝(密信)】: {sender_name} -> {target_name} (消息已记录)", 0.5)
+
+        # --- [修复 19.2 (修改版)] 秘密消息泄露 ---
+        leak_msg = f"你截获了一条密信：{sender_name} 悄悄告诉 {target_name}：'{message}'"
+        if game:
+            await self._leak_information(
+                game,
+                leak_msg,
+                self.LEAK_SECRET_MESSAGE_BASE,  # (新) 使用基础概率
+                sender_id,  # (新) 传入行动者 ID
+                sender_id, target_id
+            )
+        # --- [修复 19.2 结束] ---
 
     def _normalize_suit_symbol(self, raw: Optional[str]) -> Optional[str]:
         if not raw:
@@ -1948,9 +2043,13 @@ class GameController:
         pressure_penalty = min(0.25, player_obj.current_pressure * 0.45)
 
         # 5. 低筹码惩罚 (逻辑不变)
-        low_stack_penalty = 0.0
+        # 5. 【!! 新规则：绝境加成 (代替低筹码惩罚) !!】
+        desperation_modifier = 0.0
         if chips < 300:
-            low_stack_penalty = 0.2 + min(0.3, (300 - max(chips, 0)) / 400.0)
+            # (新) 筹码越低，作弊成功率越高 (被发现概率降低)
+            # (在 299 筹码时，提供 -15% 的概率；在 0 筹码时，提供 -35% 的概率)
+            desperation_bonus = 0.15 + min(0.20, (300 - max(chips, 0)) / 300.0 * 0.20)
+            desperation_modifier = -desperation_bonus  # (这是一个负值，即 成功率Buff)
 
         # 6. [您的要求 1] 次数惩罚 (新 V3)
         # (player_obj.cheat_attempts 是作弊总次数)
@@ -1962,7 +2061,7 @@ class GameController:
         global_alert_penalty = min(0.40, self.global_alert_level / 100.0)
 
         # 最终概率 = 基础 + 经验修正 + 压力 + 低筹码 + 次数惩罚 + 全局警戒
-        probability = base + experience_modifier + pressure_penalty + low_stack_penalty + frequency_penalty + global_alert_penalty
+        probability = base + experience_modifier + pressure_penalty + desperation_modifier + frequency_penalty + global_alert_penalty
 
         return max(0.05, min(0.95, probability))
 
@@ -2172,6 +2271,17 @@ class GameController:
             f"【上帝(作弊日志)】: {player_name} 偷偷修改了 {len(modifications)} 张牌 ({changes_desc})。",
             0.5
         )
+
+        # --- [修复 19.3 (修改版)] 作弊行为泄露 ---
+        leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 的动作非常可疑... 似乎在荷官不注意时调换了手牌。"
+        await self._leak_information(
+            game,
+            leak_msg,
+            self.LEAK_CHEAT_MOVE_BASE,  # (新) 使用基础概率
+            player_id,  # (新) 传入行动者 ID
+            player_id
+        )
+        # --- [修复 19.3 结束] ---
 
         result["success"] = True
         result["cards"] = log_payload["cards"]
@@ -2455,6 +2565,7 @@ class GameController:
              next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
              opponent_private_impressions_str, observed_speech_str,
              received_secret_messages_str, inventory_str,
+             field_item_intel_str,  # (新) 接收新变量
              min_raise_increment, dealer_name,
              observed_moods_str, multiplier, call_cost,
              table_seating_str, opponent_reference_str) = self._build_llm_prompt(
@@ -2468,6 +2579,7 @@ class GameController:
                     opponent_private_impressions_str, observed_speech_str,
                     received_secret_messages_str,
                     inventory_str,
+                    field_item_intel_str,  # (新) 传入新变量
                     min_raise_increment,
                     dealer_name,
                     observed_moods_str,
@@ -2532,8 +2644,18 @@ class GameController:
             loan_request = action_json.get("loan_request")
             if loan_request:
                 await self._handle_loan_request(game, current_player_idx, loan_request)
+                # (新) 如果处理了贷款，立即刷新面板以显示新筹码
+                await self.god_panel_update(self._build_panel_data(game, start_player_id))
 
-            action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
+            # --- [修复 22.1] 修复贷款导致动作验证失败的Bug ---
+            # (旧的 'actions_list' 在贷款/道具使用后已“陈旧”)
+            # (我们必须在解析前，根据*当前*的筹码量重新生成动作列表)
+            fresh_raw_actions = game.available_actions(current_player_idx, player_debuffs or set())
+            fresh_actions_list = [(act_type.name, display_cost) for act_type, display_cost in fresh_raw_actions]
+            # --- [修复 22.1 结束] ---
+
+            # (新) 使用“新鲜”的列表进行解析
+            action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, fresh_actions_list)
             if self._parse_warnings:
                 for warning in self._parse_warnings:
                     await self.god_print(warning, 0.5)
