@@ -143,50 +143,68 @@ class Player:
             base *= 1.25
         return max(0.05, min(0.75, base))
 
-    def update_experience_after_action(self, action_json: dict, cheat_context: Optional[dict] = None) -> None:
-        """(新) 根据动作和玩法提升经验。"""
+    def update_experience_after_action(
+            self,
+            action_json: dict,
+            cheat_context: Optional[dict] = None,
+            call_cost: int = 0,
+            current_pot: int = 0
+    ) -> None:
+        """(新 V2) 根据动作、风险比例和心理战提升经验。"""
         if not isinstance(action_json, dict):
             return
+
         action_name = str(action_json.get("action", "")).upper()
         if not action_name:
             return
 
-        gain = 1.0
-        if action_name in {"RAISE", "COMPARE"}:
-            gain += 1.5
+        base_gain = 0.2  # 基础参与经验
+
+        # 维度1：动作风险
+        if action_name == "RAISE":
+            # 加注：收益与加注额相对于底池的比例挂钩
+            try:
+                raise_amount = int(action_json.get("amount", 0))
+            except (ValueError, TypeError):
+                raise_amount = 0
+
+            # (跟注成本 + (加注增量 * 倍率)) - 这太复杂，我们只看增量
+            # 我们用 call_cost (它代表了当前下注水平) 作为基准
+            risk_ratio = min((raise_amount + call_cost) / max(current_pot, 1), 2.0)
+            base_gain += 1.0 + (risk_ratio * 1.5)  # 基础 1.0 + 风险比例加成
+
+        elif action_name == "COMPARE":
+            # 比牌：中等风险
+            base_gain += 1.2
+
         elif action_name == "CALL":
-            gain += 0.8
+            # 跟注：收益与跟注额相对于底池的比例挂钩
+            risk_ratio = min(call_cost / max(current_pot, 1), 1.0)
+            base_gain += 0.5 + (risk_ratio * 1.0)  # 基础 0.5 + 风险比例加成
+
         elif action_name == "FOLD":
-            gain += 0.3
+            # 弃牌：低收益
+            base_gain += 0.3
 
+        # 维度2：人设加成 (贯彻人设)
         if "aggressive" in self.persona_tags and action_name in {"RAISE", "COMPARE", "ALL_IN_SHOWDOWN"}:
-            gain += 0.8
+            base_gain += 0.5
         if "cautious" in self.persona_tags and action_name in {"FOLD", "CALL"}:
-            gain += 0.6
+            base_gain += 0.4
         if "deceptive" in self.persona_tags and action_json.get("speech"):
-            gain += 0.4
-
-        mood = action_json.get("mood") or ""
-        if isinstance(mood, str) and any(k in mood for k in ("紧张", "恐惧", "崩溃")):
-            gain += 0.2  # 在压力中累积经验
-
-        self.play_history.append(action_name)
-
-        if cheat_context and cheat_context.get("attempted"):
-            if cheat_context.get("success"):
-                gain += 2.5
-            else:
-                gain -= 1.2
-                if cheat_context.get("detected"):
-                    gain -= 1.0
-
-        if action_json.get("speech"):
+            base_gain += 0.6  # 贯彻欺诈人设并发言
             self.mindgame_moves += 1
+
+        # 维度3：作弊 (高风险/回报，这由另一个函数处理)
+        # cheat_context 仅用于标记，实际的作弊经验由 update_experience_from_cheat 处理
+
+        # 维度4：社交 (秘密消息)
         secret_payload = action_json.get("secret_message")
         if isinstance(secret_payload, dict) and secret_payload.get("message"):
+            base_gain += 1.0  # 社交/密谋 额外加成
             self.mindgame_moves += 2
 
-        self.experience = max(0.0, self.experience + gain)
+        self.experience = max(0.0, self.experience + base_gain)
 
     def update_experience_from_cheat(self, success: bool, cheat_type: str, context: Optional[dict] = None) -> None:
         """(新) 作弊结果反馈经验。"""
@@ -203,6 +221,23 @@ class Player:
         elif context and context.get("detected"):
             delta -= 2.5
         self.experience = max(0.0, self.experience + delta)
+
+    def update_experience_from_win(self, pot_at_showdown: int):
+        """
+        (新 V2) 获胜者专属奖励。
+        奖励 = 基础 5.0 + 10% 的最终底池 (上限 20)
+        """
+        if pot_at_showdown <= 0:
+            return
+
+        # 算法：基础分 5.0
+        base_gain = 5.0
+
+        # 比例算法：奖励 10% 的底池大小，设置一个合理的上限
+        pot_bonus = min(pot_at_showdown * 0.1, 20.0)
+
+        total_gain = base_gain + pot_bonus
+        self.experience = max(0.0, self.experience + total_gain)
 
     def update_experience_from_reflection(self, reflection_text: str, private_notes: dict) -> None:
         """(新) 复盘也能提升经验。"""

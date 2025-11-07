@@ -167,6 +167,7 @@ class GameState:
     deck: List[Card]
     players: List[PlayerState]
     pot: int = 0
+    pot_at_showdown: int = 0  # <-- [新] 增加此行，用于记录结算时的底池
     current_bet: int = 0
     current_player: int = 0
     last_raiser: Optional[int] = None

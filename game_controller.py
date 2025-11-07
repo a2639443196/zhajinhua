@@ -230,6 +230,8 @@ class GameController:
                 status = "已淘汰"
             elif not game.state.players[i].alive:
                 status = "已弃牌"
+            elif game.state.players[i].all_in:  # <-- 修复：增加此项
+                status = "已All-In"
             elif game.state.players[i].looked:
                 status = "已看牌"
             else:
@@ -1073,7 +1075,12 @@ class GameController:
                     game.step(Action(player=current_player_idx, type=ActionType.FOLD))
                     await self.god_panel_update(self._build_panel_data(game, start_player_id))
 
-            current_player_obj.update_experience_after_action(action_json, cheat_context)
+            current_player_obj.update_experience_after_action(
+                action_json,
+                cheat_context,
+                call_cost,
+                game.state.pot
+            )
 
             if action_obj.type == ActionType.LOOK and not game.state.finished:
                 await self.god_print(f"{current_player_obj.name} 刚刚看了牌，现在轮到他/她再次行动...", 1)
@@ -1102,6 +1109,20 @@ class GameController:
             self.persistent_chips[i] = new_chips
             await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips}", 0.5)
         await self.god_panel_update(self._build_panel_data(None, -1))
+
+        # --- [新] 经验系统 V2：调用获胜者奖励 ---
+        winner_id = game.state.winner
+        final_pot_size = game.state.pot_at_showdown  # (来自步骤一)
+
+        if winner_id is not None and final_pot_size > 0:
+            winner_obj = self.players[winner_id]
+            if winner_obj.alive:
+                winner_obj.update_experience_from_win(final_pot_size)
+                await self.god_print(
+                    f"【上帝(经验)】: {winner_obj.name} (获胜者) 额外获得 {(5.0 + min(final_pot_size * 0.1, 20.0)):.1f} 点经验 (来自底池奖励)",
+                    0.5
+                )
+        # --- [新] 插入结束 ---
 
         await self.god_print(f"--- LLM 人设发言开始 (同时私下更新笔记) ---", 1)
         final_state_data = game.export_state(view_player=None)

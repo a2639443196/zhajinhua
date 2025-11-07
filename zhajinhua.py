@@ -287,6 +287,9 @@ class ZhajinhuaGame:
 
     def _payout(self):
         # ... (此函数无修改) ...
+        # (在函数顶部或底部添加)
+        self.state.pot_at_showdown = self.state.pot  # <-- [新] 记录下最终底池
+
         if self.state.winner is not None:
             self.state.players[self.state.winner].chips += self.state.pot
             self.state.pot = 0
