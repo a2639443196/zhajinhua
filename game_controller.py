@@ -1568,7 +1568,6 @@ class GameController:
 
     def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
-        # ... (此函数无修改) ...
         self._parse_warnings.clear()
         action_name = action_json.get("action", "FOLD").upper()
 
@@ -1578,6 +1577,7 @@ class GameController:
                 return None, f"未提供 {target_name_key} (比牌或指控时必须明确指定目标)"
             for i, p in enumerate(self.players):
                 if p.name.strip() == target_name.strip():
+                    # (已修改) 修复：确保目标是 game.state.players 中的 alive
                     if game.state.players[i].alive:
                         return i, ""
                     else:
@@ -1598,6 +1598,7 @@ class GameController:
                 action_type = ActionType.LOOK
 
         if action_type is None and action_name == "RAISE":
+            # (此部分是旧的降级逻辑，用于 AI 选择 RAISE 但 RAISE 不在可用列表时)
             player_state = game.state.players[player_id]
             call_cost = game.get_call_cost(player_id)
             chips = player_state.chips
@@ -1629,7 +1630,8 @@ class GameController:
                         or amount_val > max_affordable_increment
                 )
                 total_cost = call_cost + (amount_val or 0) * multiplier if amount_val is not None else None
-                if total_cost is not None and chips <= total_cost:
+                # (已修改) 修复：此处应为 <=
+                if total_cost is not None and chips < total_cost:
                     insufficient_raise = True
 
                 if insufficient_raise and can_call:
@@ -1663,23 +1665,65 @@ class GameController:
         target = None
         target2 = None
 
+        # --- [修复 8.1 (替换)]：集成 RAISE 成本验证 ---
         if action_type == ActionType.RAISE:
             min_inc = game.state.config.min_raise
             try:
                 amount_increment_str = action_json.get("amount")
                 amount = int(amount_increment_str)
                 if amount < min_inc:
-                    return Action(player=player_id,
-                                  type=ActionType.FOLD), f"警告: {self.players[player_id].name} 试图加注 {amount}，小于最小增量 {min_inc}。强制弃牌。"
+                    # AI 请求的加注额无效 (太小)
+                    self._parse_warnings.append(
+                        f"警告: {self.players[player_id].name} 试图加注 {amount} (小于最小增量 {min_inc})。")
+                    return Action(player=player_id, type=ActionType.FOLD), f"加注金额 {amount} 小于最小增量 {min_inc}。"
+
             except (ValueError, TypeError):
-                return Action(player=player_id,
-                              type=ActionType.FOLD), f"警告: {self.players[player_id].name} RAISE 动作未提供有效的 'amount'。强制弃牌。"
+                # AI 请求 RAISE 但未提供 amount
+                self._parse_warnings.append(f"警告: {self.players[player_id].name} RAISE 动作未提供有效的 'amount'。")
+                return Action(player=player_id, type=ActionType.FOLD), "RAISE 动作未提供有效的 'amount'。"
+
+            # 在 _parse_action_json 中执行 RAISE 筹码验证
+            ps = game.state.players[player_id]
+            call_cost = game.get_call_cost(player_id)
+            multiplier = 2 if ps.looked else 1
+            total_raise_cost = call_cost + (amount * multiplier)
+
+            if ps.chips < total_raise_cost:
+                # 筹码不足以支付这个 RAISE！
+                self._parse_warnings.append(
+                    f"警告: {self.players[player_id].name} 试图 RAISE (成本 {total_raise_cost})，但只有 {ps.chips} 筹码。"
+                )
+
+                # 检查是否能降级为 CALL
+                # (我们必须从 available_actions 列表中确认 CALL 是否可用)
+                can_call = any(
+                    name == "CALL" for name, cost in available_actions if name == "CALL" and ps.chips >= cost)
+
+                if can_call:
+                    # 筹码足够 Call，降级为 Call
+                    self._parse_warnings.append("动作已自动降级为 CALL。")
+                    action_type = ActionType.CALL
+                    amount = None  # CALL 没有 amount
+                else:
+                    # 筹码不够 Call，检查是否能 All In
+                    can_all_in = any(name == "ALL_IN_SHOWDOWN" for name, _ in available_actions)
+                    if can_all_in:
+                        self._parse_warnings.append("动作已自动降级为 ALL_IN_SHOWDOWN。")
+                        action_type = ActionType.ALL_IN_SHOWDOWN
+                        amount = None
+                    else:
+                        # 连 All In 都不行 (不应发生)，强制 Fold
+                        self._parse_warnings.append("动作已自动降级为 FOLD。")
+                        action_type = ActionType.FOLD
+                        amount = None
+        # --- [修复 8.1 结束] ---
 
         elif action_type == ActionType.COMPARE:
             target_id, err = find_target_id("target_name")
             if err:
                 return Action(player=player_id,
                               type=ActionType.FOLD), f"警告: {self.players[player_id].name} COMPARE 失败: {err}。强制弃牌。"
+            # (已修改) 修复：应为 target_id
             if any(effect.get("effect_id") == "compare_immunity" for effect in self._get_effects_for_player(target_id)):
                 return Action(player=player_id,
                               type=ActionType.FOLD), (
