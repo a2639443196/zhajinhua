@@ -31,7 +31,7 @@
     "name": "免死金牌",
     "type": "functional",
     "cost_estimate": 2400,
-    "description": "在比牌失败时可强行作废结果，双方留待下轮再战。",
+    "description": "【被动】当你在手牌结束时或因贷款/指控被淘汰时，此道具自动消耗，使你以 100 筹码复活。",
     "auction_weight": 3
   },
   "ITM_006": {

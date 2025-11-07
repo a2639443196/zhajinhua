@@ -447,12 +447,12 @@ class GameController:
             )
             return {"action": "draw"}
 
-        if self._consume_effect(final_loser, "compare_second_chance"):
-            self._queue_message(
-                f"【道具生效】{self.players[final_loser].name} 的免死金牌发动，逃过此次比牌淘汰。",
-                0.5
-            )
-            return {"action": "draw"}
+        # if self._consume_effect(final_loser, "compare_second_chance"):
+        #     self._queue_message(
+        #         f"【道具生效】{self.players[final_loser].name} 的免死金牌发动，逃过此次比牌淘汰。",
+        #         0.5
+        #     )
+        #     return {"action": "draw"}
 
         return {"loser": final_loser}
 
@@ -938,17 +938,12 @@ class GameController:
             return result_flags
 
         if item_id == "ITM_005":  # 免死金牌
-            consume_item()
-            self.active_effects.append({
-                "effect_id": "compare_second_chance",
-                "effect_name": item_info.get("name", "免死金牌"),
-                "source_id": player_id,
-                "target_id": player_id,
-                "turns_left": 1,
-                "category": "buff"
-            })
-            await self.god_print(f"【道具生效】{player.name} 装备免死金牌，下一次比牌失败时可死里逃生。", 0.5)
-            return result_flags
+            # (新) 告知玩家这是被动道具
+            await self.god_print(
+                f"【系统提示】{player.name} 试图主动使用免死金牌(ITM_005)。此道具为【被动】效果，无需主动使用。", 0.5)
+            # (新) AI 浪费了一次行动，但不消耗道具
+            # consume_item() # (注释掉)
+            return None  # 阻止行动
 
         if item_id == "ITM_006":  # 偷看卡
             alive_targets = [i for i, ps in enumerate(game.state.players) if ps.alive and i != player_id]
@@ -1313,7 +1308,7 @@ class GameController:
                 player_state.chips = 0
                 player_state.alive = False
                 self.persistent_chips[idx] = 0
-                player.alive = False
+                # player.alive = False
                 await self.god_print(
                     f"【系统金库】{player.name} 无力偿还 {due_amount} 筹码，被判定违约并淘汰出局。",
                     0.5
@@ -2176,8 +2171,8 @@ class GameController:
             target_2_state.chips = 0
             target_1_state.alive = False
             target_2_state.alive = False
-            self.players[target_id_1].alive = False
-            self.players[target_id_2].alive = False
+            # self.players[target_id_1].alive = False
+            # self.players[target_id_2].alive = False
 
             await self.god_print(f"没收 {target_name_1} 和 {target_name_2} 的全部筹码，共 {penalty_pool}。", 1)
 
@@ -2206,7 +2201,7 @@ class GameController:
             penalty_pool = accuser_state.chips
             accuser_state.chips = 0
             accuser_state.alive = False
-            self.players[accuser_id].alive = False
+            #self.players[accuser_id].alive = False
 
             await self.god_print(f"没收 {accuser_name} 的全部筹码: {penalty_pool}。", 1)
 
@@ -2487,12 +2482,55 @@ class GameController:
 
         await self.god_print("--- 最终亮牌 (上帝视角已在看板) ---", 1)
         await self.god_panel_update(self._build_panel_data(game, start_player_id))
-        await self.god_print("--- 本手筹码结算 ---", 1)
+        await self.god_print("--- 本手筹码结算 (并检查淘汰/复活) ---", 1)
+
+        # (新) 在循环外获取 'game' 对象，因为 'game' 在此作用域内 100% 可用。
+        current_game_state = game.state
+
         for i, p_state in enumerate(game.state.players):
             old_chips = self.persistent_chips[i]
             new_chips = p_state.chips
+
+            # (新) 检查是否在本轮死亡
+            if new_chips <= 0:
+                p = self.players[i]
+                if p.alive:  # 仅当他们 *之前* 还活着时，才处理淘汰/复活
+                    # --- 检查 ITM_005 复活 ---
+                    if "ITM_005" in p.inventory:
+                        try:
+                            p.inventory.remove("ITM_005")
+                        except ValueError:
+                            pass
+
+                        revive_chips = 100
+                        new_chips = revive_chips  # (新) 将新筹码设为复活筹码
+                        p.alive = True  # 保持控制器存活
+
+                        # (新) 更新游戏状态机
+                        current_game_state.players[i].chips = revive_chips
+                        current_game_state.players[i].alive = True
+                        current_game_state.players[i].all_in = False
+
+                        await self.god_print(f"  {self.players[i].name}: {old_chips} -> 0", 0.3)
+                        await self.god_print(f"!!! 玩家 {p.name} 筹码输光...但免死金牌(ITM_005)发动！", 0.5)
+                        await self.god_print(f"【道具生效】: {p.name} 消耗道具并以 {revive_chips} 筹码复活！", 1)
+
+                    else:
+                        # --- 没有复活道具，玩家被淘汰 ---
+                        await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips}", 0.3)
+                        await self.god_print(f"!!! 玩家 {p.name} 筹码输光，已被淘汰 !!!", 1)
+                        p.alive = False  # (新) 在控制器中标记为淘汰
+
+                else:  # (如果 p.alive 已经是 False，说明是之前淘汰的)
+                    await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips} (已淘汰)", 0.3)
+
+            else:
+                # 筹码 > 0
+                await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips}", 0.3)
+
+            # (新) 最终更新 persistent_chips
             self.persistent_chips[i] = new_chips
-            await self.god_print(f"  {self.players[i].name}: {old_chips} -> {new_chips}", 0.5)
+
         await self.god_panel_update(self._build_panel_data(None, -1))
 
         # --- [新] 经验系统 V2：调用获胜者奖励 ---
