@@ -174,6 +174,11 @@ class GameController:
             player_is_active = False
             is_dealer = (i == start_player_id)
             player_chips = self.persistent_chips[i]
+            inventory_names: list[str] = []
+            for owned_id in p.inventory:
+                owned_info = self.item_catalog.get(owned_id, {})
+                display_name = owned_info.get("name", owned_id)
+                inventory_names.append(f"{display_name} ({owned_id})")
             if self.persistent_chips[i] <= 0:
                 hand_str = "已淘汰"
             elif game and game.state and game.state.players:
@@ -203,7 +208,9 @@ class GameController:
                 "is_dealer": is_dealer,
                 "experience_level": p.get_experience_level(),
                 "experience_value": round(p.experience, 1),
-                "pressure_state": p.get_pressure_descriptor()
+                "pressure_state": p.get_pressure_descriptor(),
+                "inventory": inventory_names,
+                "inventory_count": len(inventory_names)
             })
         return {
             "hand_count": self.hand_count,
@@ -521,31 +528,36 @@ class GameController:
 
         await self.god_print(
             f"【系统拍卖行】即将竞拍: {item_info.get('name', item_id)} ({item_id}) - {item_info.get('description', '')}",
-            1
+            0.6
         )
 
-        bid_tasks = [
-            self._get_player_bid(player_id, item_id, item_info, eligible_players)
-            for player_id in eligible_players
-        ]
-
-        results_raw = await asyncio.gather(*bid_tasks, return_exceptions=True)
         bid_results: List[Dict[str, object]] = []
-        for idx, res in enumerate(results_raw):
-            player_id = eligible_players[idx]
-            if isinstance(res, Exception):
+        for player_id in eligible_players:
+            try:
+                stream_prefix = f"【系统拍卖行】[{self.players[player_id].name}] 出价思考："
+                result = await self._get_player_bid(
+                    player_id, item_id, item_info, eligible_players, stream_prefix
+                )
+            except Exception:
                 await self.god_print(
                     f"【上帝(警告)】: {self.players[player_id].name} 的拍卖决策失败，视为弃权。",
                     0.5
                 )
-                bid_results.append({
+                result = {
                     "player_id": player_id,
                     "bid": 0,
                     "cheat_move": None,
                     "secret_message": None,
-                })
-            else:
-                bid_results.append(res)
+                }
+            bid_results.append(result)
+            await self.god_print(
+                f"【系统拍卖行】{self.players[player_id].name} 报价 {int(result.get('bid', 0))} 筹码。",
+                0.4
+            )
+            reason = result.get("reason")
+            if reason:
+                await self.god_print(f"  ↳ 理由: {reason}", 0.35)
+            await asyncio.sleep(0.2)
 
         for entry in bid_results:
             secret_message = entry.get("secret_message")
@@ -556,10 +568,23 @@ class GameController:
             if isinstance(cheat_move, dict):
                 cheat_type = str(cheat_move.get("type", "")).upper()
                 if cheat_type == "INSPECT_BIDS":
+                    player_id = entry["player_id"]
+                    player_name = self.players[player_id].name
                     await self.god_print(
-                        f"【安保提示】{self.players[entry['player_id']].name} 试图窥探其他人的出价，被安保阻止。",
+                        f"【安保提示】{player_name} 试图窥探其他人的出价，被安保阻止。",
                         0.5
                     )
+                    penalty = min(
+                        self.persistent_chips[player_id],
+                        max(20, self.persistent_chips[player_id] // 10)
+                    )
+                    if penalty > 0:
+                        self.persistent_chips[player_id] -= penalty
+                        await self.god_print(
+                            f"【安保惩罚】{player_name} 因窥视被罚没 {penalty} 筹码。",
+                            0.6
+                        )
+                        await self.god_panel_update(self._build_panel_data(None, -1))
 
         winner_id, winning_bid = self._resolve_auction(bid_results)
         if winner_id is None or winning_bid <= 0:
@@ -577,7 +602,7 @@ class GameController:
         await self.god_panel_update(self._build_panel_data(None, -1))
 
     async def _get_player_bid(self, player_id: int, item_id: str, item_info: Dict[str, object],
-                              bidder_ids: List[int]) -> Dict[str, object]:
+                              bidder_ids: List[int], stream_prefix: Optional[str] = None) -> Dict[str, object]:
         player = self.players[player_id]
         try:
             template = AUCTION_PROMPT_PATH.read_text(encoding="utf-8")
@@ -617,10 +642,18 @@ class GameController:
 
         messages = [{"role": "user", "content": prompt}]
 
-        async def _noop(_: str):
-            return None
+        if stream_prefix:
+            await self.god_stream_start(stream_prefix)
 
-        response = await player.llm_client.chat_stream(messages, player.model_name, _noop)
+        async def _stream(chunk: str):
+            if stream_prefix:
+                await self.god_stream_chunk(chunk)
+
+        try:
+            response = await player.llm_client.chat_stream(messages, player.model_name, _stream)
+        finally:
+            if stream_prefix:
+                await self.god_stream_chunk("\n")
         parsed = player._parse_first_valid_json(response) or {}
 
         try:
@@ -1212,6 +1245,7 @@ class GameController:
                 if start_attempts > self.num_players:
                     start_player_id = 0
                     break
+            await self._run_auction_phase()
             p_name = self.players[start_player_id].name
             await self.god_print(f"--- 第 {self.hand_count} 手牌开始 (庄家: {p_name}) ---", 1.5)
 
@@ -2013,7 +2047,6 @@ class GameController:
 
     async def run_round(self, start_player_id: int):
         # (已修改) 增加调试打印
-        await self._run_auction_phase()
         await self._process_turn_based_effects()
 
         config = GameConfig(num_players=self.num_players)
