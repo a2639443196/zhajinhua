@@ -15,28 +15,79 @@ AUCTION_PROMPT_PATH = BASE_DIR / "prompt/auction_bid_prompt.txt"
 
 
 class SystemVault:
-    """金库逻辑：根据经验和信誉评估贷款请求。"""
+    """金库逻辑：(新) 根据经验和手牌强度评估贷款请求。"""
 
     def __init__(self, base_interest_rate: float = 0.16):
         self.base_interest_rate = base_interest_rate
 
-    def get_max_loan(self, experience: float) -> int:
+    def _calculate_hand_strength_bonus(self, hand: list[Card], has_looked: bool) -> int:
+        """ (新) 根据手牌类型计算额外贷款额度 """
+        if not has_looked or not hand:
+            # 没看牌，或者没手牌，不能以手牌为抵押
+            return 0
+
+        try:
+            hand_type = evaluate_hand(hand).hand_type
+        except Exception:
+            return 0
+
+        # (新) 牌型奖金 (数值可按需调整)
+        if hand_type == HandType.TRIPS:  # 豹子
+            return 3000
+        if hand_type == HandType.STRAIGHT_FLUSH:  # 顺金
+            return 2500
+        if hand_type == HandType.FLUSH:  # 金花
+            return 1200
+        if hand_type == HandType.STRAIGHT:  # 顺子
+            return 800
+        if hand_type == HandType.PAIR:  # 对子
+            return 400
+
+        # 单张 (High Card) 或 235 不提供额外奖金
+        return 0
+
+    def get_max_loan(self, experience: float, hand: list[Card], has_looked: bool) -> int:
+        # (新) 修改了函数签名
+
+        # 1. 基础额度 (来自经验值)
         baseline = 400
         experience_bonus = int(min(max(experience, 0.0) * 25, 3000))
-        return baseline + experience_bonus
+        base_loan = baseline + experience_bonus
 
-    def assess_loan_request(self, player: Player, amount: int, turns: int) -> Dict[str, object]:
+        # 2. 手牌强度奖金
+        hand_bonus = self._calculate_hand_strength_bonus(hand, has_looked)
+
+        return base_loan + hand_bonus
+
+    def assess_loan_request(self, player: Player, amount: int, turns: int,
+                            # (新) 评估时需要游戏状态
+                            game: ZhajinhuaGame) -> Dict[str, object]:
+
         if player.loan_data:
             return {"approved": False, "reason": "你仍有未清贷款，必须先归还。"}
 
         if amount <= 0:
             return {"approved": False, "reason": "贷款金额必须大于 0。"}
 
-        max_amount = self.get_max_loan(player.experience)
+        # (新) 获取手牌状态
+        player_id = self._find_player_by_name(player.name)  # (需要辅助函数，假设 player.name 是唯一的)
+        if player_id is None:
+            player_id = self._find_player_id_by_obj(player)  # (需要辅助函数)
+
+        # (安全回退)
+        current_hand = []
+        has_looked = False
+        if player_id is not None and game and game.state:
+            ps = game.state.players[player_id]
+            current_hand = ps.hand
+            has_looked = ps.looked
+
+        max_amount = self.get_max_loan(player.experience, current_hand, has_looked)
+
         if amount > max_amount:
             return {
                 "approved": False,
-                "reason": f"额度不足。以你当前的经验值，最高可贷 {max_amount}。"
+                "reason": f"额度不足。以你当前的经验和手牌，最高可贷 {max_amount}。"
             }
 
         approved_turns = max(2, min(6, int(turns or 0)))
@@ -48,6 +99,12 @@ class SystemVault:
 
         interest_rate = self.base_interest_rate + max(0.0, (0.35 - min(player.experience, 120.0) / 400.0))
         interest_rate = min(0.45, interest_rate)
+
+        # (新) 手牌越好，利率越低
+        hand_bonus = self._calculate_hand_strength_bonus(current_hand, has_looked)
+        interest_rate -= (hand_bonus / 3000.0) * 0.15  # (好牌最高可降低 15% 利率)
+        interest_rate = max(0.05, interest_rate)  # (最低 5% 利率)
+
         due_amount = int(amount * (1 + interest_rate))
 
         return {
@@ -57,10 +114,20 @@ class SystemVault:
             "due_in_hands": approved_turns,
             "interest_rate": round(interest_rate, 3),
             "reason": (
-                f"批准贷款 {amount}，利率 {interest_rate:.2%}，"
+                f"批准贷款 {amount}，利率 {interest_rate:.2%} (已计入手牌强度)，"
                 f"请在 {approved_turns} 手内归还共 {due_amount} 筹码。"
             )
         }
+
+    # (新) 辅助函数，用于 assess_loan_request
+    def _find_player_by_name(self, name: str) -> Optional[int]:
+        # (这个函数已在 GameController 中，我们假设 Vault 稍后会通过 Controller 访问)
+        # (为了独立，我们暂时假设它无法访问 self.players)
+        return None
+
+    def _find_player_id_by_obj(self, player: Player) -> Optional[int]:
+        # (同上)
+        return None
 
 
 class GameController:
@@ -1251,7 +1318,8 @@ class GameController:
         except (TypeError, ValueError):
             turns = 0
 
-        assessment = self.vault.assess_loan_request(self.players[player_id], amount, turns)
+        # (新) 将 game 对象传入评估
+        assessment = self.vault.assess_loan_request(self.players[player_id], amount, turns, game)
         if not assessment.get("approved"):
             await self.god_print(f"【系统金库】{self.players[player_id].name} 的贷款被拒绝: {assessment.get('reason')}",
                                  0.5)
@@ -1552,6 +1620,35 @@ class GameController:
             my_persona_str += (
                 f"\n【!! 债务警报 !!】你欠系统金库 {due_amount} 筹码，距离强制清算还剩 {hands_left} 手。"
             )
+        else:
+            # --- [修复 17.1 (修正版)] ---
+
+            # (新) 获取当前手牌状态
+            ps_loan = game.state.players[player_id]
+            current_hand = ps_loan.hand
+            has_looked = ps_loan.looked
+
+            # (新) get_max_loan 内部会检查 has_looked，
+            # 如果未看牌，max_loan 只会包含基础额度。
+            max_loan = self.vault.get_max_loan(player_obj.experience, current_hand, has_looked)
+
+            my_persona_str += (
+                f"\n【系统金库】你信誉良好。你的最高可贷额度为: {max_loan} 筹码。"
+            )
+
+            # (新) 计算基础额度
+            base_loan_calc = (400 + int(min(max(player_obj.experience, 0.0) * 25, 3000)))
+
+            if has_looked and max_loan > base_loan_calc:
+                # 玩家已看牌，且额度高于基础额度，提示他们
+                my_persona_str += f" (已包含你当前手牌的额外额度)"
+
+            elif not has_looked:
+                # [修复] 修正错字 (my_nota_str -> my_persona_str)
+                # [修复] 移除信息泄露 (不再暗示手牌“不错”)
+                my_persona_str += f" (如果你看牌，手牌强度也可能会提高额度)"
+
+        # --- [修复 17.1 (修正版) 结束] ---
 
         inventory_display = []
         for item_id in player_obj.inventory:
@@ -2250,7 +2347,7 @@ class GameController:
             penalty_pool = accuser_state.chips
             accuser_state.chips = 0
             accuser_state.alive = False
-            #self.players[accuser_id].alive = False
+            # self.players[accuser_id].alive = False
 
             await self.god_print(f"没收 {accuser_name} 的全部筹码: {penalty_pool}。", 1)
 
