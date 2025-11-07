@@ -281,7 +281,8 @@ class GameController:
 
             seat_role = " / ".join(seat_role_parts)
             status = player_status_list[seat_player_id] if seat_player_id < len(player_status_list) else "未知"
-            seat_chip_info = st.players[seat_player_id].chips if seat_player_id < len(st.players) else self.persistent_chips[seat_player_id]
+            seat_chip_info = st.players[seat_player_id].chips if seat_player_id < len(st.players) else \
+                self.persistent_chips[seat_player_id]
             seating_lines.append(
                 f"  - {seat_role}: {seat_player.name} (筹码={seat_chip_info}, 状态={status})"
             )
@@ -417,10 +418,10 @@ class GameController:
                     )
             else:
                 insufficient_raise = (
-                    amount_val is None
-                    or amount_val < min_raise_inc
-                    or max_affordable_increment < min_raise_inc
-                    or amount_val > max_affordable_increment
+                        amount_val is None
+                        or amount_val < min_raise_inc
+                        or max_affordable_increment < min_raise_inc
+                        or amount_val > max_affordable_increment
                 )
                 total_cost = call_cost + (amount_val or 0) * multiplier if amount_val is not None else None
                 if total_cost is not None and chips <= total_cost:
@@ -559,7 +560,8 @@ class GameController:
         probability = base - experience_mitigation + pressure_penalty + low_stack_penalty
         return max(0.05, min(0.95, probability))
 
-    async def _handle_cheat_move(self, game: ZhajinhuaGame, player_id: int, cheat_move: Optional[dict]) -> Dict[str, object]:
+    async def _handle_cheat_move(self, game: ZhajinhuaGame, player_id: int, cheat_move: Optional[dict]) -> Dict[
+        str, object]:
         """(新) 处理换花色/点数作弊。"""
         result = {"attempted": False, "success": False, "type": None, "detected": False, "cards": []}
         if not cheat_move or not isinstance(cheat_move, dict):
@@ -811,7 +813,8 @@ class GameController:
             if actor_id == target_id_1 or actor_id == target_id_2:
                 actor_name = self.players[actor_id].name
                 status = "成功" if payload.get("success") else "失败"
-                detail = payload.get("error") or f"第 {payload.get('card_index')} 张: {payload.get('from')} -> {payload.get('to')}"
+                detail = payload.get(
+                    "error") or f"第 {payload.get('card_index')} 张: {payload.get('from')} -> {payload.get('to')}"
                 log = f"  - [H{hand_num}] {actor_name} 试图使用非法动作 {cheat_type} ({status}): {detail}"
                 evidence_log_entries.append(log)
                 await self.god_print(log, 0.5)
@@ -987,7 +990,7 @@ class GameController:
              min_raise_increment, dealer_name,
              observed_moods_str, multiplier, call_cost,
              table_seating_str, opponent_reference_str) = self._build_llm_prompt(game, current_player_idx,
-                                                                                start_player_id)
+                                                                                 start_player_id)
 
             try:
                 action_json = await current_player_obj.decide_action(
@@ -1010,11 +1013,16 @@ class GameController:
                 action_json = {"action": "FOLD", "reason": f"决策系统崩溃: {e}", "target_name": None, "mood": "崩溃",
                                "speech": None, "secret_message": None}
 
-            # --- (新) 调试块：打印详细的错误原因 ---
-            error_reason = action_json.get("reason", "")
-            if "失败" in error_reason or "错误" in error_reason or "超时" in error_reason or "崩溃" in error_reason:
-                await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 强制弃牌，原因: {error_reason}", 0.5)
-            # --- 调试块结束 ---
+                # --- (新) 调试块：打印详细的错误原因 (已修正) ---
+                player_mood = action_json.get("mood", "")
+                player_action = action_json.get("action", "")
+
+                # 只有当动作真的是 FOLD 且 mood 表明是错误时，才触发
+                if (player_action == "FOLD" and
+                        ("失败" in player_mood or "错误" in player_mood or "超时" in player_mood)):
+                    error_reason = action_json.get("reason", "(原因未知)")
+                    await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 决策失败并强制弃牌，原因: {error_reason}", 0.5)
+                # --- 调试块结束 ---
 
             cheat_context = await self._handle_cheat_move(game, current_player_idx, action_json.get("cheat_move"))
 
