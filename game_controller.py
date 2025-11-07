@@ -81,6 +81,7 @@ class GameController:
         self.global_alert_level: float = 0.0
         self.CHEAT_ALERT_INCREASE = 25.0  # (新) 每次抓获增加 25 点
         self.CHEAT_ALERT_DECAY_PER_HAND = 3.0  # (新) 每手牌降低 3 点
+        self.auction_min_raise_floor = 20  # (新) 拍卖中最小的加注底限 (例如 20)
 
         try:
             with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
@@ -528,7 +529,7 @@ class GameController:
         except ValueError:
             return
 
-        # --- [修复 6.1] 优化拍卖行公告 (合并版) ---
+        # ... (省略拍卖行公告) ...
         item_name = item_info.get('name', item_id)
         item_effect_desc = item_info.get('description', '效果未知')
         announcement_text = (
@@ -538,9 +539,8 @@ class GameController:
             f"--------------------------"
         )
         await self.god_print(announcement_text, 0.6)
-        # --- [修复 6.1 结束] ---
 
-        # --- [修复 11.1] 多轮拍卖核心逻辑 (无跟注) ---
+        # --- [修复 12.1] 多轮拍卖核心逻辑 (无跟注, 实时最小加注) ---
         current_highest_bid = 1  # 起拍价
         current_highest_bidder_id: Optional[int] = None
         active_bidders = set(eligible_players)
@@ -559,24 +559,31 @@ class GameController:
                 current_highest_bidder_id].name if current_highest_bidder_id is not None else '无人'
             await self.god_print(f"当前最高价: {current_highest_bid} (来自: {leader_name})", 0.5)
 
-            if not is_first_bid_placed:
-                required_increment = 1
-            else:
-                required_increment = max(self.auction_min_raise_floor, int(last_raise_amount * 0.5))
-
-            min_next_bid_to_raise = current_highest_bid + required_increment
-
-            if is_first_bid_placed:
-                await self.god_print(f"(本轮必须出价 >= {min_next_bid_to_raise} 才能继续)", 0.3)
-            else:
-                await self.god_print(f"(等待首位出价... 最小出价: {min_next_bid_to_raise})", 0.3)
-
             players_to_ask = list(active_bidders)
             players_who_folded = set()
             new_raise_made_this_round = False
 
+            # (新) 标记本轮是否是首个行动者 (用于处理首轮平价)
+            is_first_actor_this_round = True
+
             for player_id in players_to_ask:
-                # (新) 移除 'players_who_called_current_bid' 检查
+                # --- [修复 12.1 (关键)] ---
+                # (新) 在玩家行动前，实时计算最小加注额
+                if not is_first_bid_placed:
+                    required_increment = 1  # 首位出价者
+                else:
+                    required_increment = max(self.auction_min_raise_floor, int(last_raise_amount * 0.5))
+
+                min_next_bid_to_raise = current_highest_bid + required_increment
+
+                # (新) 如果是本轮第一个行动者，且已有人出价，必须加注
+                if is_first_actor_this_round and is_first_bid_placed:
+                    await self.god_print(f"(本轮必须出价 >= {min_next_bid_to_raise} 才能继续)", 0.3)
+                elif not is_first_bid_placed:
+                    await self.god_print(f"(等待首位出价... 最小出价: {min_next_bid_to_raise})", 0.3)
+                # --- [修复 12.1 结束] ---
+
+                is_first_actor_this_round = False  # 不再是首个行动者
 
                 try:
                     stream_prefix = f"【系统拍卖行】[{self.players[player_id].name}] (等待出价...): "
@@ -608,7 +615,6 @@ class GameController:
                     )
 
                 else:
-                    # (新) 移除 "elif bid_amount == current_highest_bid" 逻辑
                     # 出价 < 最小加注要求 (或 0)，视为放弃
                     if bid_amount > 0:
                         await self.god_print(
@@ -624,7 +630,6 @@ class GameController:
                 await self.god_print(f"其他玩家均已放弃。", 0.5)
                 break
 
-            # (新) 僵局检查：如果一整轮无人加注
             if not new_raise_made_this_round and is_first_bid_placed:
                 await self.god_print(f"一轮无人加注，拍卖结束。", 0.5)
                 break
@@ -640,7 +645,6 @@ class GameController:
             await self.god_print("【系统拍卖行】无人出价，本次流拍。", 0.5)
             return
 
-        # ( ... 结算逻辑保持不变 ...)
         winner_id = current_highest_bidder_id
         winning_bid = current_highest_bid
         self.persistent_chips[winner_id] -= winning_bid
