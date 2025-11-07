@@ -9,7 +9,6 @@ from zhajinhua import ZhajinhuaGame, GameConfig, Action
 from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType
 from player import Player
 
-
 BASE_DIR = Path(__file__).parent.resolve()
 ITEM_STORE_PATH = BASE_DIR / "items_store.json"
 AUCTION_PROMPT_PATH = BASE_DIR / "prompt/auction_bid_prompt.txt"
@@ -62,6 +61,7 @@ class SystemVault:
                 f"请在 {approved_turns} 手内归还共 {due_amount} 筹码。"
             )
         }
+
 
 class GameController:
     """
@@ -631,12 +631,34 @@ class GameController:
             )
         other_status = "\n".join(other_lines) if other_lines else "暂无竞争对手 (你可自由定价)。"
 
+        # --- [修复 1.1]：计算安全筹码和真实可出价上限 ---
+        current_chips = self.persistent_chips[player_id]
+        # (self.hand_count 此时已+1, 代表即将开始的局)
+        _base, distribution, _total = self._build_ante_distribution()
+        ante_cost = distribution[player_id]
+
+        # 定义安全缓冲：例如保留 3 倍的底注 (您可以调整这个 '3')
+        # 即使底注为0 (例如其他玩家都all-in了)，也至少保留 20 筹码
+        safety_buffer = max(ante_cost * 3, 20)
+
+        # 玩家真正能用于拍卖的钱
+        max_bid_allowed = max(0, current_chips - safety_buffer)
+        # --- [修复 1.1 结束] ---
+
+        # --- [修复 1.2]：将安全限制注入 Prompt ---
+        my_assets_str = f"""- 你的总筹码: {current_chips}
+        - 你的背包: {inventory_str}
+        - 【!! 重要警告 !!】: 你必须为下局保留 {safety_buffer} 筹码 (约 3 倍底注) 用于上桌。
+        - 【!! 你的实际可出价上限是: {max_bid_allowed} !!】"""
+        # --- [修复 1.2 结束] ---
+
         prompt = template.format(
             item_name=item_info.get("name", item_id),
             item_description=item_info.get("description", ""),
             item_value=item_info.get("cost_estimate", "未知"),
-            my_chips=self.persistent_chips[player_id],
-            my_inventory=inventory_str,
+            my_chips=current_chips,  # (保留旧的，以防模板未更新)
+            my_assets_str=my_assets_str,  # (使用新的)
+            my_inventory=inventory_str,  # (保留旧的，以防模板未更新)
             other_bidders_status=other_status
         )
 
@@ -661,14 +683,26 @@ class GameController:
         except (TypeError, ValueError):
             bid_value = 0
 
-        bid_value = max(0, min(bid_value, self.persistent_chips[player_id]))
+        # --- [修复 1.3]：强制执行安全上限 (防止 AI 忽略 Prompt) ---
+        # 确保 AI 的出价不会超过我们计算的“真实上限”
+        final_bid = max(0, min(bid_value, max_bid_allowed))
+
+        if final_bid < bid_value:
+            # AI 试图出价过高，被系统强制修正
+            await _stream(
+                f"\n【系统修正】: AI 出价 {bid_value} 过高，"
+                f"已强制修正为 {final_bid} (保留 {safety_buffer} 筹码)。"
+            )
+
+        bid_value = final_bid
+        # --- [修复 1.3 结束] ---
 
         secret_message = parsed.get("secret_message") if isinstance(parsed.get("secret_message"), dict) else None
         cheat_move = parsed.get("cheat_move") if isinstance(parsed.get("cheat_move"), dict) else None
 
         return {
             "player_id": player_id,
-            "bid": bid_value,
+            "bid": bid_value,  # (确保这里返回的是修正后的 bid_value)
             "reason": parsed.get("reason"),
             "mood": parsed.get("mood"),
             "cheat_move": cheat_move,
@@ -706,7 +740,8 @@ class GameController:
             effect_name = effect.get("effect_name", effect.get("effect_id", "未知效果"))
             await self.god_print(f"【道具效果结束】{target_name} 的 {effect_name} 已失效。", 0.5)
 
-    async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]) -> Optional[Dict[str, object]]:
+    async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]) -> \
+    Optional[Dict[str, object]]:
         if not isinstance(item_payload, dict):
             await self.god_print(f"【系统提示】道具使用数据无效，操作被忽略。", 0.5)
             return None
@@ -1558,8 +1593,8 @@ class GameController:
             if any(effect.get("effect_id") == "compare_immunity" for effect in self._get_effects_for_player(target_id)):
                 return Action(player=player_id,
                               type=ActionType.FOLD), (
-                    f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
-                )
+                           f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
+                       )
             target = target_id
 
         elif action_type == ActionType.ACCUSE:
