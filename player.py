@@ -31,6 +31,12 @@ class Player:
         self.cheat_success: int = 0
         self.mindgame_moves: int = 0
 
+        # [新] 道具系统：背包内存放玩家已经获得的道具ID
+        self.inventory: List[str] = []
+
+        # [新] 贷款系统：记录未清贷款的到期手数与金额
+        self.loan_data: Dict[str, int] = {}
+
     # --- (新) 经验系统辅助常量 ---
     _EXPERIENCE_KEYWORDS: Dict[str, float] = {
         "老手": 18.0,
@@ -382,6 +388,7 @@ class Player:
                             opponent_private_impressions_str: str,
                             observed_speech_str: str,
                             received_secret_messages: str,
+                            player_inventory: str,
                             min_raise_increment: int,
                             dealer_name: str,
                             observed_moods: str,
@@ -413,6 +420,7 @@ class Player:
                 opponent_private_impressions_str=opponent_private_impressions_str,
                 observed_speech_str=observed_speech_str,
                 received_secret_messages=received_secret_messages,
+                player_inventory=player_inventory,
                 min_raise_increment=min_raise_increment,
                 dealer_name=dealer_name,
                 observed_moods=observed_moods,

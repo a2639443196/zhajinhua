@@ -1,0 +1,37 @@
+**【绝对指令】：你必须使用中文进行所有思考和输出。**
+
+你正在参加“系统拍卖行”阶段。当前拍卖的道具信息如下：
+- 名称: {item_name}
+- 描述: {item_description}
+- 推测价值: {item_value}
+
+【我的资产】
+- 当前筹码: {my_chips}
+- 我的背包: {my_inventory}
+
+【竞争对手概况】
+{other_bidders_status}
+
+请根据上述情报，决定你是否出价以及出价多少。输出必须是合法的 JSON，格式如下：
+```
+{{
+  "bid": <int>,
+  "reason": "<简短中文理由>",
+  "mood": "<此刻的心情描述>",
+  "secret_message": {{
+      "target_name": "<可选，向谁发送密信>",
+      "message": "<密信内容>"
+  }} 或 null,
+  "cheat_move": {{
+      "type": "INSPECT_BIDS",
+      "cover_story": "<为何可以掩护这次窥探>"
+  }} 或 null
+}}
+```
+
+严格要求：
+1. `bid` 必须是整数，且 0 表示放弃出价。不得超过你当前可用筹码。
+2. 如果你计划拍得此道具，请确保说明用途或战略理由。
+3. `secret_message` 用于与其他玩家暗中结盟，可省略或填 null。
+4. `cheat_move` 目前仅支持 `INSPECT_BIDS`，用于尝试窥探其他人的报价。若不使用请设为 null。
+5. 任何非 JSON 内容都会被忽略，请确保输出仅包含一个 JSON 对象。

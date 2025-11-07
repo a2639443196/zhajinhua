@@ -86,12 +86,14 @@ class ZhajinhuaGame:
         return call_cost * self.config.accuse_cost_multiplier
 
     # --- (核心 Bug 修复) ---
-    def available_actions(self, player: int) -> List[Tuple[ActionType, int]]:
+    def available_actions(self, player: int, active_debuffs: set | None = None) -> List[Tuple[ActionType, int]]:
         # (已修改) 增加 ACCUSE
         st = self.state
         ps = st.players[player]
         if not ps.alive or st.finished or ps.all_in:
             return []
+
+        active_debuffs = active_debuffs or set()
 
         actions = []
         if not ps.looked:
@@ -111,7 +113,7 @@ class ZhajinhuaGame:
 
             min_raise_an_increment = st.config.min_raise
             min_raise_cost = min_raise_an_increment * 2 if ps.looked else min_raise_an_increment
-            if ps.chips > call_cost + min_raise_cost:
+            if ps.chips > call_cost + min_raise_cost and "lock_raise" not in active_debuffs:
                 actions.append((ActionType.RAISE, call_cost + min_raise_cost))
 
             if can_compare and len(self.alive_players()) >= 2:

@@ -2,12 +2,66 @@ import time
 import json
 import asyncio
 import random
+from pathlib import Path
 from typing import List, Dict, Callable, Awaitable, Tuple, Optional
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
 from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT
 from player import Player
 
+
+BASE_DIR = Path(__file__).parent.resolve()
+ITEM_STORE_PATH = BASE_DIR / "items_store.json"
+AUCTION_PROMPT_PATH = BASE_DIR / "prompt/auction_bid_prompt.txt"
+
+
+class SystemVault:
+    """金库逻辑：根据经验和信誉评估贷款请求。"""
+
+    def __init__(self, base_interest_rate: float = 0.16):
+        self.base_interest_rate = base_interest_rate
+
+    def get_max_loan(self, experience: float) -> int:
+        baseline = 400
+        experience_bonus = int(min(max(experience, 0.0) * 25, 3000))
+        return baseline + experience_bonus
+
+    def assess_loan_request(self, player: Player, amount: int, turns: int) -> Dict[str, object]:
+        if player.loan_data:
+            return {"approved": False, "reason": "你仍有未清贷款，必须先归还。"}
+
+        if amount <= 0:
+            return {"approved": False, "reason": "贷款金额必须大于 0。"}
+
+        max_amount = self.get_max_loan(player.experience)
+        if amount > max_amount:
+            return {
+                "approved": False,
+                "reason": f"额度不足。以你当前的经验值，最高可贷 {max_amount}。"
+            }
+
+        approved_turns = max(2, min(6, int(turns or 0)))
+        if turns is None or turns <= 0:
+            approved_turns = 3
+
+        if approved_turns < 2:
+            return {"approved": False, "reason": "贷款最少需要 2 手牌后归还。"}
+
+        interest_rate = self.base_interest_rate + max(0.0, (0.35 - min(player.experience, 120.0) / 400.0))
+        interest_rate = min(0.45, interest_rate)
+        due_amount = int(amount * (1 + interest_rate))
+
+        return {
+            "approved": True,
+            "amount": amount,
+            "due_amount": due_amount,
+            "due_in_hands": approved_turns,
+            "interest_rate": round(interest_rate, 3),
+            "reason": (
+                f"批准贷款 {amount}，利率 {interest_rate:.2%}，"
+                f"请在 {approved_turns} 手内归还共 {due_amount} 筹码。"
+            )
+        }
 
 class GameController:
     """
@@ -24,6 +78,19 @@ class GameController:
         self.player_configs = player_configs
         self.num_players = len(player_configs)
         self.players = [Player(config["name"], config["model"]) for config in player_configs]
+
+        try:
+            with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
+                self.item_catalog: Dict[str, Dict[str, object]] = json.load(fp)
+        except FileNotFoundError:
+            self.item_catalog = {}
+            print(f"【上帝(警告)】: 未找到 {ITEM_STORE_PATH.name}，拍卖行暂不可用。")
+        except json.JSONDecodeError as exc:
+            self.item_catalog = {}
+            print(f"【上帝(错误)】: 解析 {ITEM_STORE_PATH.name} 失败: {exc}。")
+
+        self.vault = SystemVault()
+        self.active_effects: List[Dict[str, object]] = []
 
         default_chips = GameConfig.initial_chips
         self.persistent_chips: List[int] = [default_chips] * self.num_players
@@ -137,6 +204,342 @@ class GameController:
             "players": players_data
         }
 
+    def _select_item_for_auction(self) -> tuple[str, Dict[str, object]]:
+        if not self.item_catalog:
+            raise ValueError("item catalog empty")
+        items = list(self.item_catalog.items())
+        weights = [max(1, int(info.get("auction_weight", 1))) for _, info in items]
+        index = random.choices(range(len(items)), weights=weights, k=1)[0]
+        return items[index]
+
+    def _find_player_by_name(self, name: str) -> Optional[int]:
+        for idx, player in enumerate(self.players):
+            if player.name.strip() == (name or "").strip():
+                return idx
+        return None
+
+    def _get_effects_for_player(self, player_id: int) -> List[Dict[str, object]]:
+        return [effect for effect in self.active_effects if effect.get("target_id") == player_id]
+
+    async def _run_auction_phase(self):
+        if not self.item_catalog:
+            return
+
+        eligible_players = [
+            idx for idx in range(self.num_players)
+            if self.players[idx].alive and self.persistent_chips[idx] > 0
+        ]
+        if len(eligible_players) <= 1:
+            return
+
+        try:
+            item_id, item_info = self._select_item_for_auction()
+        except ValueError:
+            return
+
+        await self.god_print(
+            f"【系统拍卖行】即将竞拍: {item_info.get('name', item_id)} ({item_id}) - {item_info.get('description', '')}",
+            1
+        )
+
+        bid_tasks = [
+            self._get_player_bid(player_id, item_id, item_info, eligible_players)
+            for player_id in eligible_players
+        ]
+
+        results_raw = await asyncio.gather(*bid_tasks, return_exceptions=True)
+        bid_results: List[Dict[str, object]] = []
+        for idx, res in enumerate(results_raw):
+            player_id = eligible_players[idx]
+            if isinstance(res, Exception):
+                await self.god_print(
+                    f"【上帝(警告)】: {self.players[player_id].name} 的拍卖决策失败，视为弃权。",
+                    0.5
+                )
+                bid_results.append({
+                    "player_id": player_id,
+                    "bid": 0,
+                    "cheat_move": None,
+                    "secret_message": None,
+                })
+            else:
+                bid_results.append(res)
+
+        for entry in bid_results:
+            secret_message = entry.get("secret_message")
+            if secret_message:
+                await self._handle_secret_message(None, entry["player_id"], secret_message)
+
+            cheat_move = entry.get("cheat_move")
+            if isinstance(cheat_move, dict):
+                cheat_type = str(cheat_move.get("type", "")).upper()
+                if cheat_type == "INSPECT_BIDS":
+                    await self.god_print(
+                        f"【安保提示】{self.players[entry['player_id']].name} 试图窥探其他人的出价，被安保阻止。",
+                        0.5
+                    )
+
+        winner_id, winning_bid = self._resolve_auction(bid_results)
+        if winner_id is None or winning_bid <= 0:
+            await self.god_print("【系统拍卖行】无人出价，本次流拍。", 0.5)
+            return
+
+        self.persistent_chips[winner_id] -= winning_bid
+        self.players[winner_id].inventory.append(item_id)
+
+        await self.god_print(
+            f"【系统拍卖行】{self.players[winner_id].name} 以 {winning_bid} 筹码拍得 "
+            f"{item_info.get('name', item_id)} ({item_id})。",
+            1
+        )
+        await self.god_panel_update(self._build_panel_data(None, -1))
+
+    async def _get_player_bid(self, player_id: int, item_id: str, item_info: Dict[str, object],
+                              bidder_ids: List[int]) -> Dict[str, object]:
+        player = self.players[player_id]
+        try:
+            template = AUCTION_PROMPT_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"player_id": player_id, "bid": 0, "cheat_move": None, "secret_message": None}
+
+        inventory_names = []
+        for owned_id in player.inventory:
+            owned_info = self.item_catalog.get(owned_id)
+            if owned_info:
+                inventory_names.append(f"{owned_info.get('name', owned_id)} ({owned_id})")
+            else:
+                inventory_names.append(owned_id)
+        inventory_str = "空" if not inventory_names else ", ".join(inventory_names)
+
+        other_lines = []
+        for other_id in bidder_ids:
+            if other_id == player_id:
+                continue
+            other_player = self.players[other_id]
+            other_chips = self.persistent_chips[other_id]
+            loan_info = other_player.loan_data
+            loan_str = "有债务" if loan_info else "无债务"
+            other_lines.append(
+                f"  - {other_player.name}: 筹码 {other_chips}, 道具 {len(other_player.inventory)} 件, {loan_str}"
+            )
+        other_status = "\n".join(other_lines) if other_lines else "暂无竞争对手 (你可自由定价)。"
+
+        prompt = template.format(
+            item_name=item_info.get("name", item_id),
+            item_description=item_info.get("description", ""),
+            item_value=item_info.get("cost_estimate", "未知"),
+            my_chips=self.persistent_chips[player_id],
+            my_inventory=inventory_str,
+            other_bidders_status=other_status
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+
+        async def _noop(_: str):
+            return None
+
+        response = await player.llm_client.chat_stream(messages, player.model_name, _noop)
+        parsed = player._parse_first_valid_json(response) or {}
+
+        try:
+            bid_value = int(parsed.get("bid", 0))
+        except (TypeError, ValueError):
+            bid_value = 0
+
+        bid_value = max(0, min(bid_value, self.persistent_chips[player_id]))
+
+        secret_message = parsed.get("secret_message") if isinstance(parsed.get("secret_message"), dict) else None
+        cheat_move = parsed.get("cheat_move") if isinstance(parsed.get("cheat_move"), dict) else None
+
+        return {
+            "player_id": player_id,
+            "bid": bid_value,
+            "reason": parsed.get("reason"),
+            "mood": parsed.get("mood"),
+            "cheat_move": cheat_move,
+            "secret_message": secret_message,
+            "raw": response
+        }
+
+    def _resolve_auction(self, bid_results: List[Dict[str, object]]) -> tuple[Optional[int], int]:
+        valid_bids = [entry for entry in bid_results if int(entry.get("bid", 0)) > 0]
+        if not valid_bids:
+            return None, 0
+        valid_bids.sort(key=lambda item: (-int(item.get("bid", 0)), item.get("player_id", 0)))
+        top = valid_bids[0]
+        return int(top.get("player_id")), int(top.get("bid", 0))
+
+    async def _process_turn_based_effects(self):
+        if not self.active_effects:
+            return
+
+        expired: List[Dict[str, object]] = []
+        for effect in self.active_effects:
+            if effect.get("turns_left") is not None:
+                effect["turns_left"] -= 1
+
+        for effect in list(self.active_effects):
+            if effect.get("turns_left") is not None and effect["turns_left"] <= 0:
+                expired.append(effect)
+
+        for effect in expired:
+            self.active_effects.remove(effect)
+            target_id = effect.get("target_id")
+            if target_id is None:
+                continue
+            target_name = self.players[target_id].name
+            effect_name = effect.get("effect_name", effect.get("effect_id", "未知效果"))
+            await self.god_print(f"【道具效果结束】{target_name} 的 {effect_name} 已失效。", 0.5)
+
+    async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]):
+        if not isinstance(item_payload, dict):
+            await self.god_print(f"【系统提示】道具使用数据无效，操作被忽略。", 0.5)
+            return
+
+        item_id = item_payload.get("item_id")
+        if not item_id:
+            await self.god_print(f"【系统提示】未指定要使用的道具。", 0.5)
+            return
+
+        player = self.players[player_id]
+        if item_id not in player.inventory:
+            await self.god_print(f"【系统提示】{player.name} 试图使用未持有的道具 {item_id}。", 0.5)
+            return
+
+        item_info = self.item_catalog.get(item_id, {})
+
+        def consume_item():
+            try:
+                player.inventory.remove(item_id)
+            except ValueError:
+                pass
+
+        if item_id == "ITM_003":  # 锁筹卡
+            target_name = item_payload.get("target_name")
+            target_id = self._find_player_by_name(target_name) if target_name else None
+            if target_id is None or not game.state.players[target_id].alive:
+                await self.god_print(f"【系统提示】锁筹卡需要指定一名仍在牌局中的对手。", 0.5)
+                return
+            consume_item()
+            effect_payload = {
+                "effect_id": "lock_raise",
+                "effect_name": item_info.get("name", "锁筹卡"),
+                "source_id": player_id,
+                "target_id": target_id,
+                "turns_left": 1,
+                "category": "debuff",
+                "expires_after_action": True
+            }
+            self.active_effects.append(effect_payload)
+            await self.god_print(
+                f"【道具生效】{player.name} 对 {self.players[target_id].name} 使用了锁筹卡，其下一次行动无法 RAISE。",
+                0.5
+            )
+            return
+
+        if item_id == "ITR_001":  # 护身符
+            consume_item()
+            effect_payload = {
+                "effect_id": "talisman",
+                "effect_name": item_info.get("name", "护身符"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 2,
+                "category": "buff"
+            }
+            self.active_effects.append(effect_payload)
+            await self.god_print(
+                f"【道具生效】{player.name} 启动护身符，在接下来 2 手牌内不能被指定比牌。",
+                0.5
+            )
+            return
+
+        if item_id == "VIS_001":
+            consume_item()
+            await self.god_print(f"【娱乐特效】{player.name} 点燃了烟花，等待胜利时绽放。", 0.5)
+            return
+
+        consume_item()
+        await self.god_print(
+            f"【系统提示】{player.name} 使用了 {item_info.get('name', item_id)}，目前效果尚未实装 (视为装饰)。",
+            0.5
+        )
+
+    async def _handle_loan_request(self, game: ZhajinhuaGame, player_id: int, loan_payload: Dict[str, object]):
+        if not isinstance(loan_payload, dict):
+            await self.god_print("【系统金库】贷款请求格式错误，已驳回。", 0.5)
+            return
+
+        amount = loan_payload.get("amount")
+        turns = loan_payload.get("turns")
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            amount = 0
+        try:
+            turns = int(turns)
+        except (TypeError, ValueError):
+            turns = 0
+
+        assessment = self.vault.assess_loan_request(self.players[player_id], amount, turns)
+        if not assessment.get("approved"):
+            await self.god_print(f"【系统金库】{self.players[player_id].name} 的贷款被拒绝: {assessment.get('reason')}", 0.5)
+            return
+
+        granted_amount = int(assessment.get("amount", 0))
+        if granted_amount <= 0:
+            await self.god_print("【系统金库】贷款金额无效，操作取消。", 0.5)
+            return
+
+        player_state = game.state.players[player_id]
+        player_state.chips += granted_amount
+        self.persistent_chips[player_id] += granted_amount
+
+        self.players[player_id].loan_data = {
+            "due_hand": self.hand_count + int(assessment.get("due_in_hands", 3)),
+            "due_amount": int(assessment.get("due_amount", granted_amount))
+        }
+
+        await self.god_print(
+            f"【系统金库】批准向 {self.players[player_id].name} 贷出 {granted_amount} 筹码。"
+            f"须在第 {self.players[player_id].loan_data['due_hand']} 手牌前归还共"
+            f" {self.players[player_id].loan_data['due_amount']} 筹码。",
+            0.5
+        )
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
+    async def _check_loan_repayments(self, game: ZhajinhuaGame):
+        for idx, player in enumerate(self.players):
+            if not player.loan_data:
+                continue
+
+            due_hand = player.loan_data.get("due_hand", self.hand_count)
+            due_amount = player.loan_data.get("due_amount", 0)
+            if self.hand_count < due_hand:
+                continue
+
+            player_state = game.state.players[idx]
+            if player_state.chips >= due_amount:
+                player_state.chips -= due_amount
+                self.persistent_chips[idx] = max(0, self.persistent_chips[idx] - due_amount)
+                await self.god_print(
+                    f"【系统金库】{player.name} 已偿还贷款 {due_amount} 筹码，信誉恢复正常。",
+                    0.5
+                )
+                player.loan_data.clear()
+            else:
+                player_state.chips = 0
+                player_state.alive = False
+                self.persistent_chips[idx] = 0
+                player.alive = False
+                await self.god_print(
+                    f"【系统金库】{player.name} 无力偿还 {due_amount} 筹码，被判定违约并淘汰出局。",
+                    0.5
+                )
+                player.loan_data.clear()
+
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
     async def run_game(self):
         # ... (此函数无修改) ...
         await self.god_print(f"--- 锦标赛开始 ---", 1)
@@ -212,7 +615,8 @@ class GameController:
                 await self.god_print(f"最终胜利者是: {p.name} (剩余筹码: {self.persistent_chips[i]})!", 5)
                 break
 
-    def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int) -> tuple:
+    def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int,
+                          player_debuffs: Optional[set[str]] = None) -> tuple:
         # ... (此函数无修改) ...
         st = game.state
         ps = st.players[player_id]
@@ -251,7 +655,7 @@ class GameController:
                 my_hand = f"你的手牌是: {' '.join(hand_str_list)} (牌型: 评估失败)"
 
         available_actions_tuples = []
-        raw_actions = game.available_actions(player_id)
+        raw_actions = game.available_actions(player_id, player_debuffs or set())
         call_cost = 0
         for act_type, display_cost in raw_actions:
             if act_type == ActionType.CALL: call_cost = display_cost
@@ -354,11 +758,28 @@ class GameController:
         else:
             my_persona_str += f"\n【筹码状态】当前筹码 {ps.chips}，警戒线为 300。"
 
+        if player_obj.loan_data:
+            due_hand = player_obj.loan_data.get("due_hand", self.hand_count)
+            due_amount = player_obj.loan_data.get("due_amount", 0)
+            hands_left = max(0, due_hand - self.hand_count)
+            my_persona_str += (
+                f"\n【!! 债务警报 !!】你欠系统金库 {due_amount} 筹码，距离强制清算还剩 {hands_left} 手。"
+            )
+
+        inventory_display = []
+        for item_id in player_obj.inventory:
+            item_info = self.item_catalog.get(item_id)
+            if item_info:
+                inventory_display.append(f"{item_info.get('name', item_id)} ({item_id})")
+            else:
+                inventory_display.append(item_id)
+        inventory_str = "空" if not inventory_display else "\n".join(inventory_display)
+
         return (
             "\n".join(state_summary_lines), my_hand, available_actions_str, available_actions_tuples,
             next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
             opponent_private_impressions_str, observed_speech_str,
-            received_secret_messages_str,
+            received_secret_messages_str, inventory_str,
             min_raise_increment, dealer_name, observed_moods_str, multiplier, call_cost,
             table_seating_str, opponent_reference_str
         )
@@ -466,6 +887,11 @@ class GameController:
             if err:
                 return Action(player=player_id,
                               type=ActionType.FOLD), f"警告: {self.players[player_id].name} COMPARE 失败: {err}。强制弃牌。"
+            if any(effect.get("effect_id") == "talisman" for effect in self._get_effects_for_player(target_id)):
+                return Action(player=player_id,
+                              type=ActionType.FOLD), (
+                    f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
+                )
             target = target_id
 
         elif action_type == ActionType.ACCUSE:
@@ -482,7 +908,7 @@ class GameController:
 
         return Action(player=player_id, type=action_type, amount=amount, target=target, target2=target2), ""
 
-    async def _handle_secret_message(self, game: ZhajinhuaGame, sender_id: int, message_json: dict):
+    async def _handle_secret_message(self, game: Optional[ZhajinhuaGame], sender_id: int, message_json: dict):
         # ... (此函数无修改) ...
         target_name = message_json.get("target_name")
         message = message_json.get("message")
@@ -498,10 +924,16 @@ class GameController:
                 target_id = i
                 break
 
-        valid_recipients = [
-            i for i, st_player in enumerate(game.state.players)
-            if i != sender_id and st_player.alive and self.players[i].alive
-        ]
+        if game:
+            valid_recipients = [
+                i for i, st_player in enumerate(game.state.players)
+                if i != sender_id and st_player.alive and self.players[i].alive
+            ]
+        else:
+            valid_recipients = [
+                i for i in range(self.num_players)
+                if i != sender_id and self.players[i].alive and self.persistent_chips[i] > 0
+            ]
 
         if target_id == -1 or target_id not in valid_recipients:
             if not valid_recipients:
@@ -947,6 +1379,9 @@ class GameController:
 
     async def run_round(self, start_player_id: int):
         # (已修改) 增加调试打印
+        await self._run_auction_phase()
+        await self._process_turn_based_effects()
+
         config = GameConfig(num_players=self.num_players)
         per_player_base, ante_distribution, total_ante = self._build_ante_distribution()
         config.base_bet = per_player_base
@@ -960,6 +1395,8 @@ class GameController:
             )
 
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
+
+        await self._check_loan_repayments(game)
 
         self.player_observed_moods.clear()
         self.player_last_speech.clear()
@@ -1003,14 +1440,21 @@ class GameController:
 
             await self.god_print(f"--- 轮到 {current_player_obj.name} ---", 1)
 
+            player_debuffs = {
+                effect["effect_id"]
+                for effect in self.active_effects
+                if effect.get("target_id") == current_player_idx and effect.get("category") == "debuff"
+            }
+
             (state_summary, my_hand, actions_str, actions_list,
              next_player_name, my_persona_str, opponent_personas_str, opponent_reflections_str,
              opponent_private_impressions_str, observed_speech_str,
-             received_secret_messages_str,
+             received_secret_messages_str, inventory_str,
              min_raise_increment, dealer_name,
              observed_moods_str, multiplier, call_cost,
-             table_seating_str, opponent_reference_str) = self._build_llm_prompt(game, current_player_idx,
-                                                                                 start_player_id)
+             table_seating_str, opponent_reference_str) = self._build_llm_prompt(
+                game, current_player_idx, start_player_id, player_debuffs
+            )
 
             try:
                 action_json = await current_player_obj.decide_action(
@@ -1018,6 +1462,7 @@ class GameController:
                     my_persona_str, opponent_personas_str, opponent_reflections_str,
                     opponent_private_impressions_str, observed_speech_str,
                     received_secret_messages_str,
+                    inventory_str,
                     min_raise_increment,
                     dealer_name,
                     observed_moods_str,
@@ -1049,6 +1494,14 @@ class GameController:
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
+
+            item_to_use = action_json.get("use_item")
+            if item_to_use:
+                await self._handle_item_effect(game, current_player_idx, item_to_use)
+
+            loan_request = action_json.get("loan_request")
+            if loan_request:
+                await self._handle_loan_request(game, current_player_idx, loan_request)
 
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, actions_list)
             if self._parse_warnings:
@@ -1103,6 +1556,15 @@ class GameController:
             if action_obj.type == ActionType.LOOK and not game.state.finished:
                 await self.god_print(f"{current_player_obj.name} 刚刚看了牌，现在轮到他/她再次行动...", 1)
                 continue
+
+            for effect in list(self.active_effects):
+                if effect.get("expires_after_action") and effect.get("target_id") == current_player_idx:
+                    self.active_effects.remove(effect)
+                    effect_name = effect.get("effect_name", effect.get("effect_id", "效果"))
+                    await self.god_print(
+                        f"【道具效果结束】{current_player_obj.name} 的 {effect_name} 已完成使命。",
+                        0.5
+                    )
 
             await asyncio.sleep(1)
 
