@@ -1,5 +1,6 @@
 import uvicorn
 import asyncio
+import random  # (新) 1. 导入 random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from typing import Set, List, Dict, Callable
@@ -13,11 +14,12 @@ player_configs = [
     {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
     {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
+    {"name": "Qwen3", "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"},
     {"name": "Ling", "model": "inclusionAI/Ling-1T"},
 ]
 
 
-# --- 2. WebSocket 连接管理器 (已修改) ---
+# --- 2. WebSocket 连接管理器 (无修改) ---
 class ConnectionManager:
     def __init__(self):
         self.active_spectators: Set[WebSocket] = set()
@@ -45,21 +47,17 @@ class ConnectionManager:
         await self._broadcast_json({"type": "status", "running": running})
 
     async def broadcast_panel_data(self, data: dict):
-        await self._broadcast_json({"type": "panel_update", "data": data})
+        await self.broadcast_json({"type": "panel_update", "data": data})
 
     async def _broadcast_json(self, json_message: dict):
         disconnected = set()
 
-        # --- (关键 BUG 修复) ---
-        # 遍历集合的副本 (.copy())，以允许在迭代期间安全地断开连接 (disconnect)
         for ws in self.active_spectators.copy():
-            # --- (修复结束) ---
             try:
                 await ws.send_json(json_message)
             except Exception:
                 disconnected.add(ws)
 
-        # (这个循环是安全的，因为它遍历的是一个新集合)
         for ws in disconnected:
             self.active_spectators.discard(ws)
 
@@ -69,7 +67,7 @@ app = FastAPI()
 game_loop_task: asyncio.Task | None = None
 
 
-# --- 3. 游戏循环 (无修改) ---
+# --- 3. 游戏循环 (已修改) ---
 async def run_llm_game_loop():
     global game_loop_task
 
@@ -91,8 +89,20 @@ async def run_llm_game_loop():
     async def god_panel_update(data: dict):
         await manager.broadcast_panel_data(data)
 
+    # --- (新) 2. 随机打乱玩家顺序 ---
+    # 复制全局配置列表，以确保原始顺序不变
+    shuffled_configs = player_configs.copy()
+    # 对副本进行原地洗牌
+    random.shuffle(shuffled_configs)
+
+    # (可选) 打印新的顺序到日志
+    new_order_str = ", ".join([p["name"] for p in shuffled_configs])
+    await god_print_and_broadcast(f"--- 玩家顺序已随机打乱 ---", 0.1)
+    await god_print_and_broadcast(f"本局顺序: {new_order_str}", 0.5)
+    # --- (修改结束) ---
+
     controller = GameController(
-        player_configs,
+        shuffled_configs,  # (新) 3. 传入打乱后的配置
         god_print_callback=god_print_and_broadcast,
         god_stream_start_callback=god_stream_start,
         god_stream_chunk_callback=god_stream_chunk,
