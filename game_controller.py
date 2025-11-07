@@ -1404,13 +1404,24 @@ class GameController:
 
         my_hand = "你还未看牌。"
         if ps.looked:
-            sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True)
-            hand_str_list = [INT_TO_RANK[c.rank] + SUITS[c.suit] for c in sorted_hand]
+            # --- [修复 15.1] 修复手牌索引问题 ---
+            # (旧) sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True)
+            # (旧) hand_str_list = [INT_TO_RANK[c.rank] + SUITS[c.suit] for c in sorted_hand]
+
+            # (新) 必须按 1-based 索引显示原始手牌，AI 才能正确执行 cheat_move
+            hand_str_list = []
+            for i, card in enumerate(ps.hand):
+                card_index = i + 1  # 转换为 1-based 索引
+                card_str = INT_TO_RANK[card.rank] + SUITS[card.suit]
+                hand_str_list.append(f"  - (索引 {card_index}): {card_str}")
+
             try:
                 hand_rank_obj = evaluate_hand(ps.hand)
-                my_hand = f"你的手牌是: {' '.join(hand_str_list)} (牌型: {hand_rank_obj.hand_type.name})"
+                hand_list_str = "\n".join(hand_str_list)
+                my_hand = f"你的手牌是 (牌型: {hand_rank_obj.hand_type.name}):\n{hand_list_str}"
             except Exception:
-                my_hand = f"你的手牌是: {' '.join(hand_str_list)} (牌型: 评估失败)"
+                my_hand = f"你的手牌是:\n" + "\n".join(hand_str_list)
+            # --- [修复 15.1 结束] ---
 
         available_actions_tuples = []
         raw_actions = game.available_actions(player_id, player_debuffs or set())
