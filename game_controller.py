@@ -844,11 +844,14 @@ class GameController:
             random.shuffle(game.state.deck)
             new_card = game.state.deck.pop()
             player_state.hand[card_index] = new_card
+            card_old_str = self._format_card(old_card)
+            card_new_str = self._format_card(new_card)
             self._append_system_message(
                 player_id,
-                f"换牌卡替换了 {self._format_card(old_card)} -> {self._format_card(new_card)}。"
+                f"换牌卡替换了 {card_old_str} -> {card_new_str}。"
             )
-            await self.god_print(f"【道具生效】{player.name} 更换了一张手牌。", 0.5)
+            # (新) 将详情添加到上帝日志
+            await self.god_print(f"【道具生效】{player.name} 使用换牌卡：【{card_old_str}】 替换为 【{card_new_str}】", 0.5)
             return result_flags
 
         if item_id == "ITM_002":  # 窥牌镜
@@ -875,8 +878,10 @@ class GameController:
             peek_card = target_hand[card_index]
             card_str = self._format_card(peek_card)
             self._append_system_message(player_id, f"窥牌镜看到 {self.players[target_id].name} 的 {card_str}。")
-            await self.god_print(f"【道具生效】{player.name} 使用窥牌镜窥视了 {self.players[target_id].name} 的一张暗牌。",
-                                 0.5)
+            # (新) 将 card_str 添加到上帝日志
+            await self.god_print(
+                f"【道具生效】{player.name} 使用窥牌镜，窥视到 {self.players[target_id].name} 的一张牌：【{card_str}】",
+                0.5)
             return result_flags
 
         if item_id == "ITM_003":  # 锁筹卡
@@ -942,7 +947,9 @@ class GameController:
             peek_card = random.choice(target_hand)
             card_str = self._format_card(peek_card)
             self._append_system_message(player_id, f"偷看卡窥见 {self.players[target_id].name} 的 {card_str}。")
-            await self.god_print(f"【道具生效】{player.name} 偷看了 {self.players[target_id].name} 的一张暗牌。", 0.5)
+            # (新) 将 card_str 添加到上帝日志
+            await self.god_print(
+                f"【道具生效】{player.name} 使用偷看卡，偷看到 {self.players[target_id].name} 的一张牌：【{card_str}】", 0.5)
             return result_flags
 
         if item_id == "ITM_007":  # 调牌符
@@ -952,8 +959,12 @@ class GameController:
             consume_item()
             game.state.deck.extend(player_state.hand)
             random.shuffle(game.state.deck)
+            game.state.deck.extend(player_state.hand)
+            random.shuffle(game.state.deck)
             player_state.hand = [game.state.deck.pop() for _ in range(3)]
-            await self.god_print(f"【道具生效】{player.name} 重新洗发了手牌。", 0.5)
+            # (新) 获取新手牌详情
+            new_hand_str = " ".join(self._format_card(card) for card in player_state.hand)
+            await self.god_print(f"【道具生效】{player.name} 使用调牌符，新手牌为：【{new_hand_str}】", 0.5)
             return result_flags
 
         if item_id == "ITM_008":  # 顺手换牌
@@ -981,9 +992,13 @@ class GameController:
                 target_index = random.randrange(len(target_state.hand))
             player_card = player_state.hand[my_index]
             target_card = target_state.hand[target_index]
+            player_card_str = self._format_card(player_card)
+            target_card_str = self._format_card(target_card)
+            target_name = self.players[target_id].name
             player_state.hand[my_index], target_state.hand[target_index] = target_card, player_card
+            # (新) 将详情添加到上帝日志
             await self.god_print(
-                f"【道具生效】{player.name} 与 {self.players[target_id].name} 顺手交换了各自的一张牌。",
+                f"【道具生效】{player.name} (交出 {player_card_str}) 与 {target_name} (交出 {target_card_str}) 交换了手牌。",
                 0.5
             )
             return result_flags
