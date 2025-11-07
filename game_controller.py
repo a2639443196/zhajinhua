@@ -531,65 +531,109 @@ class GameController:
             0.6
         )
 
-        bid_results: List[Dict[str, object]] = []
-        for player_id in eligible_players:
-            try:
-                stream_prefix = f"【系统拍卖行】[{self.players[player_id].name}] 出价思考："
-                result = await self._get_player_bid(
-                    player_id, item_id, item_info, eligible_players, stream_prefix
-                )
-            except Exception:
-                await self.god_print(
-                    f"【上帝(警告)】: {self.players[player_id].name} 的拍卖决策失败，视为弃权。",
-                    0.5
-                )
-                result = {
-                    "player_id": player_id,
-                    "bid": 0,
-                    "cheat_move": None,
-                    "secret_message": None,
-                }
-            bid_results.append(result)
-            await self.god_print(
-                f"【系统拍卖行】{self.players[player_id].name} 报价 {int(result.get('bid', 0))} 筹码。",
-                0.4
-            )
-            reason = result.get("reason")
-            if reason:
-                await self.god_print(f"  ↳ 理由: {reason}", 0.35)
-            await asyncio.sleep(0.2)
+        # --- 多轮拍卖核心逻辑 ---
+        current_highest_bid = 1  # (新) 起拍价
+        current_highest_bidder_id: Optional[int] = None
+        active_bidders = set(eligible_players)
 
-        for entry in bid_results:
-            secret_message = entry.get("secret_message")
-            if secret_message:
-                await self._handle_secret_message(None, entry["player_id"], secret_message)
+        max_auction_rounds = 5  # (新) 避免无限循环的硬上限
+        round_count = 0
+        last_bid_change_round = 0  # (新) 跟踪最后一次加价的回合
 
-            cheat_move = entry.get("cheat_move")
-            if isinstance(cheat_move, dict):
-                cheat_type = str(cheat_move.get("type", "")).upper()
-                if cheat_type == "INSPECT_BIDS":
-                    player_id = entry["player_id"]
-                    player_name = self.players[player_id].name
+        while round_count < max_auction_rounds and len(active_bidders) > 1:
+            round_count += 1
+            await self.god_print(f"--- 拍卖第 {round_count}/{max_auction_rounds} 轮 ---", 0.5)
+
+            leader_name = self.players[
+                current_highest_bidder_id].name if current_highest_bidder_id is not None else '无人'
+            await self.god_print(f"当前最高价: {current_highest_bid} (来自: {leader_name})", 0.5)
+
+            players_to_ask = list(active_bidders)
+            players_who_folded = set()
+            new_bid_made_this_round = False
+
+            for player_id in players_to_ask:
+                # 已经是最高出价者，跳过
+                if player_id == current_highest_bidder_id:
+                    continue
+
+                try:
+                    stream_prefix = f"【系统拍卖行】[{self.players[player_id].name}] (等待出价...): "
+                    result = await self._get_player_bid(
+                        player_id, item_id, item_info, eligible_players, stream_prefix,
+                        current_highest_bid  # (新) 传入当前最高价
+                    )
+
+                    # --- [密信修复]：处理拍卖中的密信 ---
+                    secret_message = result.get("secret_message")
+                    if secret_message:
+                        # (新) game 传 None，因为拍卖不在牌局内
+                        await self._handle_secret_message(None, player_id, secret_message)
+                    # --- [修复结束] ---
+
+                    bid_amount = int(result.get("bid", 0))
+
+                except Exception:
                     await self.god_print(
-                        f"【安保提示】{player_name} 试图窥探其他人的出价，被安保阻止。",
-                        0.5
+                        f"【上帝(警告)】: {self.players[player_id].name} 的拍卖决策失败，视为弃权。", 0.5
                     )
-                    penalty = min(
-                        self.persistent_chips[player_id],
-                        max(20, self.persistent_chips[player_id] // 10)
-                    )
-                    if penalty > 0:
-                        self.persistent_chips[player_id] -= penalty
-                        await self.god_print(
-                            f"【安保惩罚】{player_name} 因窥视被罚没 {penalty} 筹码。",
-                            0.6
-                        )
-                        await self.god_panel_update(self._build_panel_data(None, -1))
+                    result = {"bid": 0}  # 失败等于弃权
 
-        winner_id, winning_bid = self._resolve_auction(bid_results)
-        if winner_id is None or winning_bid <= 0:
+                bid_amount = int(result.get("bid", 0))
+
+                if bid_amount > current_highest_bid:
+                    # 这是一个有效的加注
+                    current_highest_bid = bid_amount
+                    current_highest_bidder_id = player_id
+                    new_bid_made_this_round = True
+                    last_bid_change_round = round_count  # (新) 重置僵局计时器
+                    await self.god_print(
+                        f"【拍卖行】{self.players[player_id].name} 出价 {bid_amount}！", 0.5
+                    )
+                else:
+                    # 出价 0 或无效出价 (<= 最高价)
+                    if bid_amount > 0:
+                        await self.god_print(
+                            f"【拍卖行】{self.players[player_id].name} 出价 {bid_amount} 低于或等于当前价格，视为放弃。", 0.4
+                        )
+                    players_who_folded.add(player_id)
+
+            # 移除本轮放弃的玩家
+            active_bidders.difference_update(players_who_folded)
+
+            # (新) 检查是否只剩一人
+            if len(active_bidders) == 1:
+                winner_id = list(active_bidders)[0]
+                # 确保获胜者是最高出价者 (如果最后一人没出价，但其他人全弃权了)
+                if winner_id == current_highest_bidder_id:
+                    await self.god_print(f"其他玩家均已放弃。", 0.5)
+                    break
+                # 如果最高出价者自己也弃权了，而其他人也弃权了，那么这个唯一的幸存者必须至少匹配价格
+                if current_highest_bidder_id not in active_bidders:
+                    # 这种情况很罕见，但意味着最后一人必须出价
+                    pass  # 循环将再次询问他
+
+            # (新) 僵局检查：如果一整轮无人加价 (即 last_bid_change_round 没在本轮更新)
+            if not new_bid_made_this_round and round_count > 1:
+                await self.god_print(f"一轮无人跟注，拍卖即将结束...", 0.5)
+                # 确保最高出价者仍在
+                if current_highest_bidder_id in active_bidders:
+                    break  # 僵局导致拍卖结束
+
+            # (新) 硬上限检查
+            if round_count >= max_auction_rounds:
+                await self.god_print(f"达到 {max_auction_rounds} 轮硬上限，拍卖结束。", 0.5)
+                break
+
+            await asyncio.sleep(0.5)  # 每轮之间稍作停顿
+
+        # --- 拍卖结束，结算 ---
+        if current_highest_bidder_id is None or current_highest_bid <= 1:
             await self.god_print("【系统拍卖行】无人出价，本次流拍。", 0.5)
             return
+
+        winner_id = current_highest_bidder_id
+        winning_bid = current_highest_bid
 
         self.persistent_chips[winner_id] -= winning_bid
         self.players[winner_id].inventory.append(item_id)
@@ -602,12 +646,13 @@ class GameController:
         await self.god_panel_update(self._build_panel_data(None, -1))
 
     async def _get_player_bid(self, player_id: int, item_id: str, item_info: Dict[str, object],
-                              bidder_ids: List[int], stream_prefix: Optional[str] = None) -> Dict[str, object]:
+                              bidder_ids: List[int], stream_prefix: Optional[str] = None,
+                              current_highest_bid: int = 0) -> Dict[str, object]:  # (新) 增加 current_highest_bid
         player = self.players[player_id]
         try:
             template = AUCTION_PROMPT_PATH.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return {"player_id": player_id, "bid": 0, "cheat_move": None, "secret_message": None}
+            return {"player_id": player_id, "bid": 0}
 
         inventory_names = []
         for owned_id in player.inventory:
@@ -622,6 +667,8 @@ class GameController:
         for other_id in bidder_ids:
             if other_id == player_id:
                 continue
+            # (新) 在多轮拍卖中，对手状态应只显示仍在竞价的人
+            # if other_id not in active_bidders: continue # (注意: active_bidders 不在此函数作用域)
             other_player = self.players[other_id]
             other_chips = self.persistent_chips[other_id]
             loan_info = other_player.loan_data
@@ -629,37 +676,36 @@ class GameController:
             other_lines.append(
                 f"  - {other_player.name}: 筹码 {other_chips}, 道具 {len(other_player.inventory)} 件, {loan_str}"
             )
-        other_status = "\n".join(other_lines) if other_lines else "暂无竞争对手 (你可自由定价)。"
+        other_status = "\n".join(other_lines) if other_lines else "暂无竞争对手。"
 
-        # --- [修复 1.1]：计算安全筹码和真实可出价上限 ---
+        # --- [修复 1.1] (来自上一轮的修复)：计算安全筹码和真实可出价上限 ---
         current_chips = self.persistent_chips[player_id]
-        # (self.hand_count 此时已+1, 代表即将开始的局)
         _base, distribution, _total = self._build_ante_distribution()
         ante_cost = distribution[player_id]
-
-        # 定义安全缓冲：例如保留 3 倍的底注 (您可以调整这个 '3')
-        # 即使底注为0 (例如其他玩家都all-in了)，也至少保留 20 筹码
         safety_buffer = max(ante_cost * 3, 20)
-
-        # 玩家真正能用于拍卖的钱
         max_bid_allowed = max(0, current_chips - safety_buffer)
-        # --- [修复 1.1 结束] ---
 
-        # --- [修复 1.2]：将安全限制注入 Prompt ---
+        # --- [修复 1.2] (来自上一轮的修复)：将安全限制注入 Prompt ---
         my_assets_str = f"""- 你的总筹码: {current_chips}
-        - 你的背包: {inventory_str}
-        - 【!! 重要警告 !!】: 你必须为下局保留 {safety_buffer} 筹码 (约 3 倍底注) 用于上桌。
-        - 【!! 你的实际可出价上限是: {max_bid_allowed} !!】"""
-        # --- [修复 1.2 结束] ---
+    - 你的背包: {inventory_str}
+    - 【!! 重要警告 !!】: 你必须为下局保留 {safety_buffer} 筹码 (约 3 倍底注) 用于上桌。
+    - 【!! 你的实际可出价上限是: {max_bid_allowed} !!】"""
+
+        # (新) 多轮拍卖的上下文
+        auction_context_str = f"""- 当前最高出价: {current_highest_bid}
+    - 你的出价必须高于此价格 (或出价 0 放弃)。"""
+
+        # (新) 强制价值为 1 (来自上一轮的修复)
+        item_value = "1 (请自行根据描述评估)"
 
         prompt = template.format(
             item_name=item_info.get("name", item_id),
             item_description=item_info.get("description", ""),
-            item_value=item_info.get("cost_estimate", "未知"),
-            my_chips=current_chips,  # (保留旧的，以防模板未更新)
-            my_assets_str=my_assets_str,  # (使用新的)
-            my_inventory=inventory_str,  # (保留旧的，以防模板未更新)
-            other_bidders_status=other_status
+            item_value=item_value,
+            my_assets_str=my_assets_str,
+            other_bidders_status=other_status,
+            auction_context=auction_context_str,  # (新)
+            current_highest_bid=current_highest_bid  # (新)
         )
 
         messages = [{"role": "user", "content": prompt}]
@@ -683,40 +729,46 @@ class GameController:
         except (TypeError, ValueError):
             bid_value = 0
 
-        # --- [修复 1.3]：强制执行安全上限 (防止 AI 忽略 Prompt) ---
-        # 确保 AI 的出价不会超过我们计算的“真实上限”
-        final_bid = max(0, min(bid_value, max_bid_allowed))
+        # --- (新) 多轮拍卖的出价验证 ---
 
-        if final_bid < bid_value:
-            # AI 试图出价过高，被系统强制修正
+        if bid_value > 0 and bid_value <= current_highest_bid:
+            # AI 试图出价，但价格无效 (太低)
             await _stream(
-                f"\n【系统修正】: AI 出价 {bid_value} 过高，"
-                f"已强制修正为 {final_bid} (保留 {safety_buffer} 筹码)。"
+                f"\n【系统提示】: 出价 {bid_value} 未超过 {current_highest_bid}，视为放弃。"
             )
+            bid_value = 0  # 强制视为放弃
 
-        bid_value = final_bid
-        # --- [修复 1.3 结束] ---
+        elif bid_value > current_highest_bid:
+            # AI 试图加注，检查安全上限
+            final_bid = max(0, min(bid_value, max_bid_allowed))
 
-        secret_message = parsed.get("secret_message") if isinstance(parsed.get("secret_message"), dict) else None
-        cheat_move = parsed.get("cheat_move") if isinstance(parsed.get("cheat_move"), dict) else None
+            if final_bid < bid_value:
+                # AI 试图出价过高，被系统强制修正
+                await _stream(
+                    f"\n【系统修正】: AI 出价 {bid_value} 过高，"
+                    f"已强制修正为 {final_bid} (保留 {safety_buffer} 筹码)。"
+                )
+                bid_value = final_bid
+
+            # (新) 再次检查：如果修正后的价格不再高于当前最高价
+            if bid_value <= current_highest_bid:
+                await _stream(
+                    f"\n【系统提示】: 修正后的出价 {bid_value} 已无力超越 {current_highest_bid}，视为放弃。"
+                )
+                bid_value = 0  # 强制视为放弃
+
+        # 此时，bid_value 要么是 0 (放弃)，要么是 > current_highest_bid 且 <= max_bid_allowed
 
         return {
             "player_id": player_id,
-            "bid": bid_value,  # (确保这里返回的是修正后的 bid_value)
+            "bid": bid_value,
             "reason": parsed.get("reason"),
             "mood": parsed.get("mood"),
-            "cheat_move": cheat_move,
-            "secret_message": secret_message,
+            "cheat_move": None,
+            # (新) 启用密信: 从 AI 的 JSON 中解析
+            "secret_message": parsed.get("secret_message") if isinstance(parsed.get("secret_message"), dict) else None,
             "raw": response
         }
-
-    def _resolve_auction(self, bid_results: List[Dict[str, object]]) -> tuple[Optional[int], int]:
-        valid_bids = [entry for entry in bid_results if int(entry.get("bid", 0)) > 0]
-        if not valid_bids:
-            return None, 0
-        valid_bids.sort(key=lambda item: (-int(item.get("bid", 0)), item.get("player_id", 0)))
-        top = valid_bids[0]
-        return int(top.get("player_id")), int(top.get("bid", 0))
 
     async def _process_turn_based_effects(self):
         if not self.active_effects:
@@ -741,7 +793,7 @@ class GameController:
             await self.god_print(f"【道具效果结束】{target_name} 的 {effect_name} 已失效。", 0.5)
 
     async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]) -> \
-    Optional[Dict[str, object]]:
+            Optional[Dict[str, object]]:
         if not isinstance(item_payload, dict):
             await self.god_print(f"【系统提示】道具使用数据无效，操作被忽略。", 0.5)
             return None
