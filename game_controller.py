@@ -78,6 +78,9 @@ class GameController:
         self.player_configs = player_configs
         self.num_players = len(player_configs)
         self.players = [Player(config["name"], config["model"]) for config in player_configs]
+        self.global_alert_level: float = 0.0
+        self.CHEAT_ALERT_INCREASE = 25.0  # (新) 每次抓获增加 25 点
+        self.CHEAT_ALERT_DECAY_PER_HAND = 3.0  # (新) 每手牌降低 3 点
 
         try:
             with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
@@ -1618,8 +1621,19 @@ class GameController:
                 action_name = action_type.name
 
         if action_type is None:
+            # --- [修复 2.1]：智能降级 ---
+            can_all_in = any(name == "ALL_IN_SHOWDOWN" for name, _ in available_actions)
+
+            # 如果 AI 试图 Call 或 Raise 但筹码不足，且 All-In 是唯一出路
+            if can_all_in and action_name in {"CALL", "RAISE"}:
+                error_msg = f"警告: {self.players[player_id].name} 试图 {action_name} 但筹码不足，自动降级为 ALL_IN_SHOWDOWN。"
+                self._parse_warnings.append(error_msg)  # (使用 _parse_warnings 打印)
+                return Action(player=player_id, type=ActionType.ALL_IN_SHOWDOWN), ""  # (返回空错误)
+
+            # 否则，按原逻辑强制弃牌
             error_msg = f"警告: {self.players[player_id].name} S 选择了无效动作 '{action_name}' (可能筹码不足)。强制弃牌。"
             return Action(player=player_id, type=ActionType.FOLD), error_msg
+            # --- [修复 2.1 结束] ---
 
         amount = None
         target = None
@@ -1773,8 +1787,12 @@ class GameController:
         # 每次尝试 +1.5% 概率, 封顶 +20%
         frequency_penalty = min(player_obj.cheat_attempts * 0.015, 0.20)
 
-        # 最终概率 = 基础 + 经验修正 + 压力 + 低筹码 + 次数惩罚
-        probability = base + experience_modifier + pressure_penalty + low_stack_penalty + frequency_penalty
+        # 7. (新) 全局警戒值惩罚
+        # (每100点警戒值，增加 40% 的基础被抓率)
+        global_alert_penalty = min(0.40, self.global_alert_level / 100.0)
+
+        # 最终概率 = 基础 + 经验修正 + 压力 + 低筹码 + 次数惩罚 + 全局警戒
+        probability = base + experience_modifier + pressure_penalty + low_stack_penalty + frequency_penalty + global_alert_penalty
 
         return max(0.05, min(0.95, probability))
 
@@ -1784,6 +1802,20 @@ class GameController:
         result = {"attempted": False, "success": False, "type": None, "detected": False, "cards": []}
         if not cheat_move or not isinstance(cheat_move, dict):
             return result
+
+        player_obj = self.players[player_id]
+        player_name = player_obj.name
+
+        # --- [修复 5.4]：全局警戒值 100 检查 ---
+        if self.global_alert_level >= 100.0 and player_obj.experience < 100.0:
+            await self.god_print(f"【安保锁定】: 全局警戒值 100！{player_name} (经验 {player_obj.experience:.1f}) 经验不足，作弊被自动阻止。", 0.5)
+            log_payload = {"success": False, "error": "全局警戒值100，经验不足", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_move.get("type", "UNKNOWN"), log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_move.get("type", "UNKNOWN"), log_payload)
+            result["attempted"] = True
+            result["type"] = cheat_move.get("type", "UNKNOWN")
+            return result
+        # --- [修复 5.4 结束] ---
 
         result["attempted"] = True
         cheat_type_raw = str(cheat_move.get("type", "")).upper()
@@ -1907,6 +1939,19 @@ class GameController:
                 "probability": round(detection_probability, 3)
             }
             result["detected"] = True
+
+            # --- [修复 1.1]：执行淘汰惩罚 ---
+            ps = game.state.players[player_id]
+            penalty_pool = ps.chips
+            ps.chips = 0
+            ps.alive = False  # 淘汰玩家
+            game.state.pot += penalty_pool
+            self.players[player_id].alive = False  # 从控制器中淘汰
+            self.persistent_chips[player_id] = 0
+            result["penalty_elimination"] = True  # (新) 设置标志位
+            await self.god_print(f"【作弊惩罚】: {player_name} 被当场抓获，筹码清零并淘汰出局！", 0.5)
+            # --- [修复 1.1 结束] ---
+
             self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
             player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
             return result
@@ -2134,6 +2179,13 @@ class GameController:
 
     async def run_round(self, start_player_id: int):
         # (已修改) 增加调试打印
+        # (新) 警戒值随时间衰减
+        if self.global_alert_level > 0:
+            decay = min(self.global_alert_level, self.CHEAT_ALERT_DECAY_PER_HAND)
+            self.global_alert_level = max(0.0, self.global_alert_level - decay)
+            if decay > 0:
+                await self.god_print(f"【安保提示】: 警戒值降低 {decay:.1f}，当前: {self.global_alert_level:.1f}", 0.2)
+
         await self._process_turn_based_effects()
 
         config = GameConfig(num_players=self.num_players)
@@ -2258,6 +2310,20 @@ class GameController:
                 # --- 调试块结束 ---
 
             cheat_context = await self._handle_cheat_move(game, current_player_idx, action_json.get("cheat_move"))
+
+            # --- [修复 3.1] (作弊成功后立即刷新看板) ---
+            if cheat_context.get("success"):
+                if not cheat_context.get("penalty_elimination"):
+                    await self.god_print(f"【上帝(提示)】: 作弊成功，看板手牌已更新。", 0.1)
+                    await self.god_panel_update(self._build_panel_data(game, start_player_id))
+
+            # --- [修改点 1.2 (修正版)]：如果玩家因作弊被淘汰，则跳过本轮后续动作 ---
+            if cheat_context.get("penalty_elimination"):
+                # (我们不再需要在这里调用 _handle_next_turn())
+                # (循环顶部的 'if not p_state.alive' 会自动处理)
+                await self.god_panel_update(self._build_panel_data(game, start_player_id))
+                continue  # 结束当前玩家的循环
+            # --- [修改点 1.2 (修正版) 结束] ---
 
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
