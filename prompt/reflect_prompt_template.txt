@@ -36,7 +36,7 @@
 
 【!!格式示例 !!】
 {{
-  "public_reflection": "唉，这把我运气太差了，Qwen 你个菜鸟都能赢我，下一把走着瞧！",
+  "public_reflection": "Qwen 你个菜鸟都能赢我，下一把走着瞧！",
   "private_impressions": {{
     "Qwen3": "（更新）Qwen 在第 3 轮用 K 高牌跟注了我的加注，他似乎很鲁莽，不怎么看牌力。可以多诈唬他。",
     "Doubao": "（保留）Doubao 还是很保守，他弃掉了一个小对子，符合他'老太太'的人设。",
