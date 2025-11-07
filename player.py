@@ -711,6 +711,9 @@ class Player:
                       round_history: str,
                       round_result: str,
                       current_impressions_json: str,
+                      # (新) 添加 2 个参数
+                      player_self_details: str,
+                      opponent_name_list: str,
                       stream_start_cb: Callable[[str], Awaitable[None]],
                       stream_chunk_cb: Callable[[str], Awaitable[None]]) -> (str, dict):
         """
@@ -727,7 +730,10 @@ class Player:
                 self_name=self.name,
                 round_history=round_history,
                 round_result=round_result,
-                current_impressions_json=current_impressions_json
+                current_impressions_json=current_impressions_json,
+                # (新) 传入 2 个参数
+                player_self_details=player_self_details,
+                opponent_name_list=opponent_name_list
             )
             messages = [{"role": "user", "content": prompt}]
 

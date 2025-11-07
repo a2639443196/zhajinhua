@@ -2586,10 +2586,23 @@ class GameController:
 
                 current_impressions_json_str = json.dumps(opponent_impressions_data, indent=2, ensure_ascii=False)
 
+                # --- [修复 13.1] 构建玩家 ID-名字索引 ---
+                player_self_details_str = f"  - {player.name} (Player {i})"
+                opponent_name_list_lines = []
+                for opp_id, opp_player in enumerate(self.players):
+                    if opp_id == i:
+                        continue
+                    opponent_name_list_lines.append(f"  - {opp_player.name} (Player {opp_id})")
+                opponent_name_list_str = "\n".join(opponent_name_list_lines)
+                # --- [修复 13.1 结束] ---
+
                 (reflection_text, private_impressions_dict) = await player.reflect(
                     round_history_json,
                     round_result_str,
                     current_impressions_json_str,
+                    # (新) 传入索引
+                    player_self_details_str,
+                    opponent_name_list_str,
                     stream_start_cb=self.god_stream_start,
                     stream_chunk_cb=self.god_stream_chunk
                 )
