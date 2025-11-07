@@ -12,7 +12,7 @@ player_configs = [
     {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
     {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
-    {"name": "Kwaipilot", "model": "Kwaipilot/KAT-Dev"},
+    #{"name": "Kwaipilot", "model": "Kwaipilot/KAT-Dev"},
     {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
     {"name": "Qwen3", "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"},
     {"name": "Ling", "model": "inclusionAI/Ling-1T"},

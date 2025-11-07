@@ -498,318 +498,337 @@
     </style>
 </head>
 <body>
-    <div class="page">
-        <header>
-            <h1>LLM 锦标赛·上帝视角</h1>
-            <p>桌面端焕新界面，实时掌握每一次筹码流向</p>
-        </header>
-        <main>
-            <section class="card status-card">
-                <div class="status-overview">
-                    <span class="status-label">当前连接状态</span>
-                    <span class="status-value" id="status">正在连接到服务器...</span>
+<div class="page">
+    <header>
+        <h1>LLM 锦标赛·上帝视角</h1>
+        <p>桌面端焕新界面，实时掌握每一次筹码流向</p>
+    </header>
+    <main>
+        <section class="card status-card">
+            <div class="status-overview">
+                <span class="status-label">当前连接状态</span>
+                <span class="status-value" id="status">正在连接到服务器...</span>
+            </div>
+            <div class="controls">
+                <button id="start-button" class="control-button" disabled>连接中...</button>
+                <button id="stop-button" class="control-button stop" disabled>停止游戏</button>
+                <button id="clear-button" class="control-button clear" disabled>清空日志</button>
+            </div>
+        </section>
+
+        <section class="card" id="god-panel">
+            <div class="panel-header">
+                <h2>对局概览</h2>
+            </div>
+            <div class="panel-summary">
+                <div class="summary-item">
+                    <span>锦标赛局数</span>
+                    <strong id="panel-hand-count">0</strong>
                 </div>
-                <div class="controls">
-                    <button id="start-button" class="control-button" disabled>连接中...</button>
-                    <button id="stop-button" class="control-button stop" disabled>停止游戏</button>
-                    <button id="clear-button" class="control-button clear" disabled>清空日志</button>
+                <div class="summary-item">
+                    <span>当前底池</span>
+                    <strong id="panel-current-pot">0</strong>
                 </div>
-            </section>
+            </div>
+            <div class="panel-grid" id="panel-players"></div>
+            <div class="summary-item">
+                <span>作弊警戒值</span>
+                <strong id="panel-alert-level" style="color: #4caf50;">0.0</strong>
+            </div>
+        </section>
 
-            <section class="card" id="god-panel">
-                <div class="panel-header">
-                    <h2>对局概览</h2>
-                </div>
-                <div class="panel-summary">
-                    <div class="summary-item">
-                        <span>锦标赛局数</span>
-                        <strong id="panel-hand-count">0</strong>
-                    </div>
-                    <div class="summary-item">
-                        <span>当前底池</span>
-                        <strong id="panel-current-pot">0</strong>
-                    </div>
-                </div>
-                <div class="panel-grid" id="panel-players"></div>
-            </section>
+        <section class="card log-card">
+            <div class="log-header">
+                <span>上帝视角日志</span>
+                <span id="log-count">0 条</span>
+            </div>
+            <div class="log-body">
+                <aside class="inventory-panel">
+                    <div class="inventory-title">参赛者背包</div>
+                    <div id="inventory-container" class="inventory-list"></div>
+                </aside>
+                <div id="log-container"></div>
+            </div>
+        </section>
+    </main>
+</div>
 
-            <section class="card log-card">
-                <div class="log-header">
-                    <span>上帝视角日志</span>
-                    <span id="log-count">0 条</span>
-                </div>
-                <div class="log-body">
-                    <aside class="inventory-panel">
-                        <div class="inventory-title">参赛者背包</div>
-                        <div id="inventory-container" class="inventory-list"></div>
-                    </aside>
-                    <div id="log-container"></div>
-                </div>
-            </section>
-        </main>
-    </div>
+<script>
+    const statusDiv = document.getElementById("status");
+    const logContainer = document.getElementById("log-container");
+    const inventoryContainer = document.getElementById("inventory-container");
+    const logCountSpan = document.getElementById("log-count");
+    const startButton = document.getElementById("start-button");
+    const stopButton = document.getElementById("stop-button");
+    const clearButton = document.getElementById("clear-button");
+    let ws = null;
+    let lastLogElement = null;
+    let logCount = 0;
 
-    <script>
-        const statusDiv = document.getElementById("status");
-        const logContainer = document.getElementById("log-container");
-        const inventoryContainer = document.getElementById("inventory-container");
-        const logCountSpan = document.getElementById("log-count");
-        const startButton = document.getElementById("start-button");
-        const stopButton = document.getElementById("stop-button");
-        const clearButton = document.getElementById("clear-button");
-        let ws = null;
-        let lastLogElement = null;
-        let logCount = 0;
+    function connect() {
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        ws = new WebSocket(wsUrl);
 
-        function connect() {
-            const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-            const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-            ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            statusDiv.textContent = "已连接 (上帝模式)";
+            statusDiv.style.color = "var(--success)";
+            setButtonState(false);
+        };
 
-            ws.onopen = () => {
-                statusDiv.textContent = "已连接 (上帝模式)";
-                statusDiv.style.color = "var(--success)";
-                setButtonState(false);
-            };
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            const isScrolledToBottom = logContainer.scrollHeight - logContainer.clientHeight <= logContainer.scrollTop + 10;
 
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                const isScrolledToBottom = logContainer.scrollHeight - logContainer.clientHeight <= logContainer.scrollTop + 10;
-
-                if (msg.type === "log") {
-                    addLog(msg.message);
+            if (msg.type === "log") {
+                addLog(msg.message);
+            } else if (msg.type === "stream_start") {
+                addLog(msg.message, true);
+                if (lastLogElement) {
+                    lastLogElement.dataset.logType = "thinking";
                 }
-                else if (msg.type === "stream_start") {
-                    addLog(msg.message, true);
-                    if (lastLogElement) {
-                        lastLogElement.dataset.logType = "thinking";
+            } else if (msg.type === "stream_chunk") {
+                if (lastLogElement) {
+                    const cleanChunk = msg.chunk;
+                    lastLogElement.textContent += cleanChunk;
+                    if (isScrolledToBottom) {
+                        logContainer.scrollTop = logContainer.scrollHeight;
                     }
-                } else if (msg.type === "stream_chunk") {
-                    if (lastLogElement) {
-                        const cleanChunk = msg.chunk;
-                        lastLogElement.textContent += cleanChunk;
-                        if (isScrolledToBottom) {
-                            logContainer.scrollTop = logContainer.scrollHeight;
-                        }
-                    }
-                } else if (msg.type === "panel_update") {
-                    updateGodPanel(msg.data);
-
-                } else if (msg.type === "status") {
-                    setButtonState(msg.running);
                 }
+            } else if (msg.type === "panel_update") {
+                updateGodPanel(msg.data);
 
-                if ((msg.type === "log" || msg.type === "stream_start") && isScrolledToBottom) {
-                     logContainer.scrollTop = logContainer.scrollHeight;
-                }
-            };
+            } else if (msg.type === "status") {
+                setButtonState(msg.running);
+            }
 
-            ws.onclose = () => {
-                statusDiv.textContent = "连接已断开。5秒后重试...";
-                statusDiv.style.color = "var(--danger)";
-                setButtonState(false, true);
-                setTimeout(connect, 5000);
-            };
-            ws.onerror = () => {
-                statusDiv.textContent = "连接错误。";
-                statusDiv.style.color = "var(--danger)";
-                ws.close();
-            };
+            if ((msg.type === "log" || msg.type === "stream_start") && isScrolledToBottom) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+        };
+
+        ws.onclose = () => {
+            statusDiv.textContent = "连接已断开。5秒后重试...";
+            statusDiv.style.color = "var(--danger)";
+            setButtonState(false, true);
+            setTimeout(connect, 5000);
+        };
+        ws.onerror = () => {
+            statusDiv.textContent = "连接错误。";
+            statusDiv.style.color = "var(--danger)";
+            ws.close();
+        };
+    }
+
+    function setButtonState(isRunning, isConnecting = false) {
+        if (isConnecting) {
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            clearButton.disabled = true;
+            startButton.textContent = "连接中...";
+        } else if (isRunning) {
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            clearButton.disabled = true;
+            startButton.textContent = "游戏运行中...";
+        } else {
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            clearButton.disabled = false;
+            startButton.textContent = "开始游戏";
         }
+    }
 
-        function setButtonState(isRunning, isConnecting = false) {
-            if (isConnecting) {
-                startButton.disabled = true;
-                stopButton.disabled = true;
-                clearButton.disabled = true;
-                startButton.textContent = "连接中...";
-            } else if (isRunning) {
-                startButton.disabled = true;
-                stopButton.disabled = false;
-                clearButton.disabled = true;
-                startButton.textContent = "游戏运行中...";
+    startButton.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({type: "START_GAME"}));
+        }
+    };
+
+    stopButton.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            if (confirm("确定要立即停止当前锦标赛吗？")) {
+                ws.send(JSON.stringify({type: "STOP_GAME"}));
+            }
+        }
+    };
+
+    clearButton.onclick = () => {
+        logContainer.innerHTML = "";
+        logCount = 0;
+        updateLogCount();
+    };
+
+    function updateLogCount() {
+        logCountSpan.textContent = `${logCount} 条`;
+    }
+
+    function updateGodPanel(data) {
+        document.getElementById("panel-hand-count").textContent = data.hand_count ?? 0;
+        document.getElementById("panel-current-pot").textContent = data.current_pot ?? 0;
+
+        // --- [修复 5.7]：更新警戒值 ---
+        const alertLevelEl = document.getElementById("panel-alert-level");
+        if (alertLevelEl) {
+            const alertLevel = data.global_alert_level ?? 0;
+            alertLevelEl.textContent = alertLevel.toFixed(1);
+            // (新) 动态变色
+            if (alertLevel >= 100) {
+                alertLevelEl.style.color = "var(--danger)";
+            } else if (alertLevel > 50) {
+                alertLevelEl.style.color = "rgba(255, 193, 7, 0.9)"; // 黄色
             } else {
-                startButton.disabled = false;
-                stopButton.disabled = true;
-                clearButton.disabled = false;
-                startButton.textContent = "开始游戏";
+                alertLevelEl.style.color = "var(--success)"; // 绿色
             }
         }
+        // --- [修复 5.7 结束] ---
 
-        startButton.onclick = () => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "START_GAME" }));
+        const playersDiv = document.getElementById("panel-players");
+        playersDiv.innerHTML = "";
+
+        const players = data.players || [];
+
+        players.forEach(player => {
+            const card = document.createElement("div");
+            card.className = "player-card";
+            if (player.chips <= 0) {
+                card.classList.add("eliminated");
             }
-        };
-
-        stopButton.onclick = () => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                if (confirm("确定要立即停止当前锦标赛吗？")) {
-                    ws.send(JSON.stringify({ type: "STOP_GAME" }));
-                }
+            if (!player.is_active) {
+                card.classList.add("folded");
             }
-        };
-
-        clearButton.onclick = () => {
-            logContainer.innerHTML = "";
-            logCount = 0;
-            updateLogCount();
-        };
-
-        function updateLogCount() {
-            logCountSpan.textContent = `${logCount} 条`;
-        }
-
-        function updateGodPanel(data) {
-            document.getElementById("panel-hand-count").textContent = data.hand_count ?? 0;
-            document.getElementById("panel-current-pot").textContent = data.current_pot ?? 0;
-
-            const playersDiv = document.getElementById("panel-players");
-            playersDiv.innerHTML = "";
-
-            const players = data.players || [];
-
-            players.forEach(player => {
-                const card = document.createElement("div");
-                card.className = "player-card";
-                if (player.chips <= 0) {
-                    card.classList.add("eliminated");
-                }
-                if (!player.is_active) {
-                    card.classList.add("folded");
-                }
-                if (player.is_active) {
-                    card.classList.add("active");
-                }
-
-                const nameRow = document.createElement("div");
-                nameRow.className = "player-name";
-                const nameSpan = document.createElement("span");
-                nameSpan.textContent = `${player.name} (P${player.id})`;
-                nameRow.appendChild(nameSpan);
-                if (player.is_dealer) {
-                    const dealer = document.createElement("span");
-                    dealer.className = "dealer-badge";
-                    dealer.textContent = "庄";
-                    nameRow.appendChild(dealer);
-                }
-
-                const metaRow = document.createElement("div");
-                metaRow.className = "player-meta";
-                const chipsSpan = document.createElement("span");
-                chipsSpan.className = "player-chips";
-                chipsSpan.textContent = `筹码：${player.chips}`;
-                metaRow.appendChild(chipsSpan);
-
-                const statusTag = document.createElement("span");
-                statusTag.className = `player-tag ${player.looked ? "looked" : "hidden"}`;
-                statusTag.textContent = player.looked ? "已看牌" : "未看牌";
-                metaRow.appendChild(statusTag);
-
-                const expValue = Number(player.experience_value ?? 0);
-
-                const handRow = document.createElement("div");
-                handRow.className = "player-hand";
-                handRow.textContent = player.hand_str || "...";
-
-                const experienceRow = document.createElement("div");
-                experienceRow.className = "player-experience-row";
-                const expText = document.createElement("span");
-                expText.className = "player-experience-text";
-                expText.textContent = `经验：${player.experience_level} (${expValue.toFixed(1)})`;
-                const expBar = document.createElement("div");
-                expBar.className = "experience-bar";
-                const expBarFill = document.createElement("div");
-                expBarFill.className = "experience-bar-fill";
-                const expRatio = Math.max(0, Math.min(1, expValue / 130));
-                expBarFill.style.width = `${(expRatio * 100).toFixed(1)}%`;
-                expBar.appendChild(expBarFill);
-                experienceRow.appendChild(expText);
-                experienceRow.appendChild(expBar);
-
-                const pressureRow = document.createElement("div");
-                pressureRow.className = "player-pressure";
-                pressureRow.textContent = `心理：${player.pressure_state || "未知"}`;
-
-                card.appendChild(nameRow);
-                card.appendChild(metaRow);
-                card.appendChild(handRow);
-                card.appendChild(experienceRow);
-                card.appendChild(pressureRow);
-
-                playersDiv.appendChild(card);
-            });
-
-            renderInventory(players);
-        }
-
-        function renderInventory(players = []) {
-            if (!inventoryContainer) return;
-            inventoryContainer.innerHTML = "";
-
-            players.forEach(player => {
-                const block = document.createElement("div");
-                block.className = "inventory-player";
-
-                const header = document.createElement("div");
-                header.className = "inventory-player-header";
-                header.textContent = player.name;
-
-                const count = document.createElement("span");
-                count.className = "inventory-count";
-                count.textContent = `x${player.inventory_count || 0}`;
-                header.appendChild(count);
-
-                block.appendChild(header);
-
-                const items = Array.isArray(player.inventory) ? player.inventory : [];
-                if (items.length === 0) {
-                    const empty = document.createElement("p");
-                    empty.className = "inventory-empty";
-                    empty.textContent = "暂无道具";
-                    block.appendChild(empty);
-                } else {
-                    const list = document.createElement("ul");
-                    list.className = "inventory-items";
-                    items.forEach(item => {
-                        const li = document.createElement("li");
-                        li.className = "inventory-item";
-                        li.textContent = item;
-                        list.appendChild(li);
-                    });
-                    block.appendChild(list);
-                }
-
-                inventoryContainer.appendChild(block);
-            });
-        }
-
-        function addLog(message, isStreaming = false) {
-            const p = document.createElement("p");
-            p.className = "log-message";
-            p.textContent = message;
-
-            if (message.includes("--- 第") && message.includes("手牌开始")) {
-                p.dataset.logType = "round-start";
-            } else if (message.includes("--- 轮到")) {
-                p.dataset.logType = "turn";
-            } else if (message.includes(" 动作]:")) {
-                p.dataset.logType = "action";
-            } else if (message.includes("赢家是") || message.includes("--- 本手结束 ---")) {
-                p.dataset.logType = "result";
+            if (player.is_active) {
+                card.classList.add("active");
             }
-            logContainer.appendChild(p);
-            logCount += 1;
-            updateLogCount();
 
-            if (!isStreaming) {
-                lastLogElement = null;
+            const nameRow = document.createElement("div");
+            nameRow.className = "player-name";
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = `${player.name} (P${player.id})`;
+            nameRow.appendChild(nameSpan);
+            if (player.is_dealer) {
+                const dealer = document.createElement("span");
+                dealer.className = "dealer-badge";
+                dealer.textContent = "庄";
+                nameRow.appendChild(dealer);
+            }
+
+            const metaRow = document.createElement("div");
+            metaRow.className = "player-meta";
+            const chipsSpan = document.createElement("span");
+            chipsSpan.className = "player-chips";
+            chipsSpan.textContent = `筹码：${player.chips}`;
+            metaRow.appendChild(chipsSpan);
+
+            const statusTag = document.createElement("span");
+            statusTag.className = `player-tag ${player.looked ? "looked" : "hidden"}`;
+            statusTag.textContent = player.looked ? "已看牌" : "未看牌";
+            metaRow.appendChild(statusTag);
+
+            const expValue = Number(player.experience_value ?? 0);
+
+            const handRow = document.createElement("div");
+            handRow.className = "player-hand";
+            handRow.textContent = player.hand_str || "...";
+
+            const experienceRow = document.createElement("div");
+            experienceRow.className = "player-experience-row";
+            const expText = document.createElement("span");
+            expText.className = "player-experience-text";
+            expText.textContent = `经验：${player.experience_level} (${expValue.toFixed(1)})`;
+            const expBar = document.createElement("div");
+            expBar.className = "experience-bar";
+            const expBarFill = document.createElement("div");
+            expBarFill.className = "experience-bar-fill";
+            const expRatio = Math.max(0, Math.min(1, expValue / 130));
+            expBarFill.style.width = `${(expRatio * 100).toFixed(1)}%`;
+            expBar.appendChild(expBarFill);
+            experienceRow.appendChild(expText);
+            experienceRow.appendChild(expBar);
+
+            const pressureRow = document.createElement("div");
+            pressureRow.className = "player-pressure";
+            pressureRow.textContent = `心理：${player.pressure_state || "未知"}`;
+
+            card.appendChild(nameRow);
+            card.appendChild(metaRow);
+            card.appendChild(handRow);
+            card.appendChild(experienceRow);
+            card.appendChild(pressureRow);
+
+            playersDiv.appendChild(card);
+        });
+
+        renderInventory(players);
+    }
+
+    function renderInventory(players = []) {
+        if (!inventoryContainer) return;
+        inventoryContainer.innerHTML = "";
+
+        players.forEach(player => {
+            const block = document.createElement("div");
+            block.className = "inventory-player";
+
+            const header = document.createElement("div");
+            header.className = "inventory-player-header";
+            header.textContent = player.name;
+
+            const count = document.createElement("span");
+            count.className = "inventory-count";
+            count.textContent = `x${player.inventory_count || 0}`;
+            header.appendChild(count);
+
+            block.appendChild(header);
+
+            const items = Array.isArray(player.inventory) ? player.inventory : [];
+            if (items.length === 0) {
+                const empty = document.createElement("p");
+                empty.className = "inventory-empty";
+                empty.textContent = "暂无道具";
+                block.appendChild(empty);
             } else {
-                lastLogElement = p;
+                const list = document.createElement("ul");
+                list.className = "inventory-items";
+                items.forEach(item => {
+                    const li = document.createElement("li");
+                    li.className = "inventory-item";
+                    li.textContent = item;
+                    list.appendChild(li);
+                });
+                block.appendChild(list);
             }
-        }
 
-        connect();
-    </script>
+            inventoryContainer.appendChild(block);
+        });
+    }
+
+    function addLog(message, isStreaming = false) {
+        const p = document.createElement("p");
+        p.className = "log-message";
+        p.textContent = message;
+
+        if (message.includes("--- 第") && message.includes("手牌开始")) {
+            p.dataset.logType = "round-start";
+        } else if (message.includes("--- 轮到")) {
+            p.dataset.logType = "turn";
+        } else if (message.includes(" 动作]:")) {
+            p.dataset.logType = "action";
+        } else if (message.includes("赢家是") || message.includes("--- 本手结束 ---")) {
+            p.dataset.logType = "result";
+        }
+        logContainer.appendChild(p);
+        logCount += 1;
+        updateLogCount();
+
+        if (!isStreaming) {
+            lastLogElement = null;
+        } else {
+            lastLogElement = p;
+        }
+    }
+
+    connect();
+</script>
 </body>
 </html>

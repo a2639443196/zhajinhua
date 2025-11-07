@@ -218,6 +218,7 @@ class GameController:
         return {
             "hand_count": self.hand_count,
             "current_pot": game.state.pot if game and game.state else 0,
+            "global_alert_level": round(self.global_alert_level, 1),  # (新)
             "players": players_data
         }
 
@@ -529,19 +530,33 @@ class GameController:
         except ValueError:
             return
 
-        await self.god_print(
-            f"【系统拍卖行】即将竞拍: {item_info.get('name', item_id)} ({item_id}) - {item_info.get('description', '')}",
-            0.6
+        # --- [修复 6.1] 优化拍卖行公告 (合并版) ---
+        item_name = item_info.get('name', item_id)
+        # 道具效果就是 items_store.json 中的 description
+        item_effect_desc = item_info.get('description', '效果未知')
+
+        # (新) 构建一个包含 \n 的多行字符串
+        announcement_text = (
+            f"--- 🔔【系统拍卖行】🔔 ---\n"
+            f"  即将竞拍: 【 {item_name} ({item_id}) 】\n"
+            f"  道具效果: {item_effect_desc}\n"
+            f"--------------------------"
         )
 
-        # --- 多轮拍卖核心逻辑 ---
-        current_highest_bid = 1  # (新) 起拍价
+        # (新) 使用单次调用发送，并使用原有的最后延迟
+        await self.god_print(announcement_text, 0.6)
+        # --- [修复 6.1 结束] ---
+
+        # --- [修复 4.2] 多轮拍卖核心逻辑 (支持跟注) ---
+        current_highest_bid = 1  # 起拍价
         current_highest_bidder_id: Optional[int] = None
         active_bidders = set(eligible_players)
 
-        max_auction_rounds = 5  # (新) 避免无限循环的硬上限
+        # (新) 跟踪已跟注此价格的玩家
+        players_who_called_current_bid = set()
+
+        max_auction_rounds = 5  # (新) 增加轮数上限
         round_count = 0
-        last_bid_change_round = 0  # (新) 跟踪最后一次加价的回合
 
         while round_count < max_auction_rounds and len(active_bidders) > 1:
             round_count += 1
@@ -553,34 +568,26 @@ class GameController:
 
             players_to_ask = list(active_bidders)
             players_who_folded = set()
-            new_bid_made_this_round = False
+            new_raise_made_this_round = False
 
             for player_id in players_to_ask:
-                # 已经是最高出价者，跳过
-                if player_id == current_highest_bidder_id:
+                # 如果玩家已经跟注了当前的价格，本轮跳过
+                if player_id in players_who_called_current_bid:
                     continue
 
                 try:
                     stream_prefix = f"【系统拍卖行】[{self.players[player_id].name}] (等待出价...): "
                     result = await self._get_player_bid(
                         player_id, item_id, item_info, eligible_players, stream_prefix,
-                        current_highest_bid  # (新) 传入当前最高价
+                        current_highest_bid
                     )
-
-                    # --- [密信修复]：处理拍卖中的密信 ---
-                    secret_message = result.get("secret_message")
-                    if secret_message:
-                        # (新) game 传 None，因为拍卖不在牌局内
-                        await self._handle_secret_message(None, player_id, secret_message)
-                    # --- [修复结束] ---
-
-                    bid_amount = int(result.get("bid", 0))
-
                 except Exception:
-                    await self.god_print(
-                        f"【上帝(警告)】: {self.players[player_id].name} 的拍卖决策失败，视为弃权。", 0.5
-                    )
                     result = {"bid": 0}  # 失败等于弃权
+
+                # [密信修复] (来自上一轮的修复)
+                secret_message = result.get("secret_message")
+                if secret_message:
+                    await self._handle_secret_message(None, player_id, secret_message)
 
                 bid_amount = int(result.get("bid", 0))
 
@@ -588,39 +595,45 @@ class GameController:
                     # 这是一个有效的加注
                     current_highest_bid = bid_amount
                     current_highest_bidder_id = player_id
-                    new_bid_made_this_round = True
-                    last_bid_change_round = round_count  # (新) 重置僵局计时器
+                    new_raise_made_this_round = True
+
+                    # (新) 重置所有人的跟注状态
+                    players_who_called_current_bid.clear()
+                    # (新) 加注者本人算作已跟注
+                    players_who_called_current_bid.add(player_id)
+
                     await self.god_print(
-                        f"【拍卖行】{self.players[player_id].name} 出价 {bid_amount}！", 0.5
+                        f"【拍卖行】{self.players[player_id].name} 加注到 {bid_amount}！", 0.5
+                    )
+                elif bid_amount == current_highest_bid:
+                    # 这是一个有效的跟注
+                    players_who_called_current_bid.add(player_id)
+                    await self.god_print(
+                        f"【拍卖行】{self.players[player_id].name} 跟注 {bid_amount}。", 0.4
                     )
                 else:
-                    # 出价 0 或无效出价 (<= 最高价)
+                    # 出价 < 最高价 (或 0)，视为放弃
                     if bid_amount > 0:
                         await self.god_print(
-                            f"【拍卖行】{self.players[player_id].name} 出价 {bid_amount} 低于或等于当前价格，视为放弃。", 0.4
+                            f"【拍卖行】{self.players[player_id].name} 出价 {bid_amount} 低于当前价格，视为放弃。", 0.4
                         )
                     players_who_folded.add(player_id)
 
             # 移除本轮放弃的玩家
             active_bidders.difference_update(players_who_folded)
 
-            # (新) 检查是否只剩一人
+            # (新) 检查拍卖是否结束
             if len(active_bidders) == 1:
-                winner_id = list(active_bidders)[0]
-                # 确保获胜者是最高出价者 (如果最后一人没出价，但其他人全弃权了)
-                if winner_id == current_highest_bidder_id:
-                    await self.god_print(f"其他玩家均已放弃。", 0.5)
-                    break
-                # 如果最高出价者自己也弃权了，而其他人也弃权了，那么这个唯一的幸存者必须至少匹配价格
-                if current_highest_bidder_id not in active_bidders:
-                    # 这种情况很罕见，但意味着最后一人必须出价
-                    pass  # 循环将再次询问他
+                # 只剩一人，立即获胜
+                current_highest_bidder_id = list(active_bidders)[0]
+                await self.god_print(f"其他玩家均已放弃。", 0.5)
+                break
 
-            # (新) 僵局检查：如果一整轮无人加价 (即 last_bid_change_round 没在本轮更新)
-            if not new_bid_made_this_round and round_count > 1:
-                await self.god_print(f"一轮无人跟注，拍卖即将结束...", 0.5)
-                # 确保最高出价者仍在
-                if current_highest_bidder_id in active_bidders:
+            # (新) 僵局检查：如果一整轮无人加注
+            if not new_raise_made_this_round:
+                # 检查是否所有仍在竞拍的人，都已跟注了当前的价格
+                if active_bidders.issubset(players_who_called_current_bid):
+                    await self.god_print(f"一轮无人加注，拍卖结束。", 0.5)
                     break  # 僵局导致拍卖结束
 
             # (新) 硬上限检查
@@ -628,11 +641,12 @@ class GameController:
                 await self.god_print(f"达到 {max_auction_rounds} 轮硬上限，拍卖结束。", 0.5)
                 break
 
-            await asyncio.sleep(0.5)  # 每轮之间稍作停顿
+            await asyncio.sleep(0.5)
 
         # --- 拍卖结束，结算 ---
-        if current_highest_bidder_id is None or current_highest_bid <= 1:
-            await self.god_print("【系统拍卖行】无人出价，本次流拍。", 0.5)
+        # (结算逻辑与原版相同， current_highest_bidder_id 是最终赢家)
+        if current_highest_bidder_id is None or current_highest_bid <= 0:
+            await self.god_print("【系统拍卖行】无人出价或无人跟注，本次流拍。", 0.5)
             return
 
         winner_id = current_highest_bidder_id
@@ -733,13 +747,26 @@ class GameController:
             bid_value = 0
 
         # --- (新) 多轮拍卖的出价验证 ---
+        # --- [修复 4.1] 多轮拍卖的出价验证 (允许跟注) ---
 
-        if bid_value > 0 and bid_value <= current_highest_bid:
-            # AI 试图出价，但价格无效 (太低)
+        if bid_value > 0 and bid_value < current_highest_bid:
+            # AI 出价低于当前最高价
             await _stream(
-                f"\n【系统提示】: 出价 {bid_value} 未超过 {current_highest_bid}，视为放弃。"
+                f"\n【系统提示】: 出价 {bid_value} 低于 {current_highest_bid}，视为放弃。"
             )
             bid_value = 0  # 强制视为放弃
+
+        elif bid_value == current_highest_bid:
+            # AI 试图跟注
+            # (我们仍然要检查它是否出得起)
+            if bid_value > max_bid_allowed:
+                await _stream(
+                    f"\n【系统提示】: 筹码不足以跟注 {bid_value} (上限 {max_bid_allowed})，视为放弃。"
+                )
+                bid_value = 0  # 强制视为放弃
+            else:
+                # 这是一个合法的跟注
+                pass
 
         elif bid_value > current_highest_bid:
             # AI 试图加注，检查安全上限
@@ -760,7 +787,7 @@ class GameController:
                 )
                 bid_value = 0  # 强制视为放弃
 
-        # 此时，bid_value 要么是 0 (放弃)，要么是 > current_highest_bid 且 <= max_bid_allowed
+        # 此时，bid_value 要么是 0 (放弃)，要么是 >= current_highest_bid 且 <= max_bid_allowed
 
         return {
             "player_id": player_id,
@@ -869,7 +896,8 @@ class GameController:
             peek_card = target_hand[card_index]
             card_str = self._format_card(peek_card)
             self._append_system_message(player_id, f"窥牌镜看到 {self.players[target_id].name} 的 {card_str}。")
-            await self.god_print(f"【道具生效】{player.name} 使用窥牌镜窥视了 {self.players[target_id].name} 的一张暗牌。", 0.5)
+            await self.god_print(f"【道具生效】{player.name} 使用窥牌镜窥视了 {self.players[target_id].name} 的一张暗牌。",
+                                 0.5)
             return result_flags
 
         if item_id == "ITM_003":  # 锁筹卡
@@ -1236,7 +1264,8 @@ class GameController:
 
         assessment = self.vault.assess_loan_request(self.players[player_id], amount, turns)
         if not assessment.get("approved"):
-            await self.god_print(f"【系统金库】{self.players[player_id].name} 的贷款被拒绝: {assessment.get('reason')}", 0.5)
+            await self.god_print(f"【系统金库】{self.players[player_id].name} 的贷款被拒绝: {assessment.get('reason')}",
+                                 0.5)
             return
 
         granted_amount = int(assessment.get("amount", 0))
@@ -1624,8 +1653,8 @@ class GameController:
             # --- [修复 2.1]：智能降级 ---
             can_all_in = any(name == "ALL_IN_SHOWDOWN" for name, _ in available_actions)
 
-            # 如果 AI 试图 Call 或 Raise 但筹码不足，且 All-In 是唯一出路
-            if can_all_in and action_name in {"CALL", "RAISE"}:
+            # 如果 AI 试图 Call, Raise 或 Compare 但筹码不足，且 All-In 是唯一出路
+            if can_all_in and action_name in {"CALL", "RAISE", "COMPARE"}:
                 error_msg = f"警告: {self.players[player_id].name} 试图 {action_name} 但筹码不足，自动降级为 ALL_IN_SHOWDOWN。"
                 self._parse_warnings.append(error_msg)  # (使用 _parse_warnings 打印)
                 return Action(player=player_id, type=ActionType.ALL_IN_SHOWDOWN), ""  # (返回空错误)
@@ -1659,8 +1688,8 @@ class GameController:
             if any(effect.get("effect_id") == "compare_immunity" for effect in self._get_effects_for_player(target_id)):
                 return Action(player=player_id,
                               type=ActionType.FOLD), (
-                           f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
-                       )
+                    f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
+                )
             target = target_id
 
         elif action_type == ActionType.ACCUSE:
@@ -1808,7 +1837,9 @@ class GameController:
 
         # --- [修复 5.4]：全局警戒值 100 检查 ---
         if self.global_alert_level >= 100.0 and player_obj.experience < 100.0:
-            await self.god_print(f"【安保锁定】: 全局警戒值 100！{player_name} (经验 {player_obj.experience:.1f}) 经验不足，作弊被自动阻止。", 0.5)
+            await self.god_print(
+                f"【安保锁定】: 全局警戒值 100！{player_name} (经验 {player_obj.experience:.1f}) 经验不足，作弊被自动阻止。",
+                0.5)
             log_payload = {"success": False, "error": "全局警戒值100，经验不足", "raw": cheat_move}
             self.cheat_action_log.append((self.hand_count, player_id, cheat_move.get("type", "UNKNOWN"), log_payload))
             player_obj.update_experience_from_cheat(False, cheat_move.get("type", "UNKNOWN"), log_payload)
@@ -1871,7 +1902,8 @@ class GameController:
             if cheat_type_raw == "SWAP_SUIT":
                 target_suit_symbol = self._normalize_suit_symbol(entry.get("new_suit"))
                 if target_suit_symbol is None:
-                    await self.god_print(f"【上帝(警告)】: {player_name} 提供的目标花色无效: {entry.get('new_suit')}。", 0.5)
+                    await self.god_print(f"【上帝(警告)】: {player_name} 提供的目标花色无效: {entry.get('new_suit')}。",
+                                         0.5)
                     log_payload = {"success": False, "error": "花色无效", "raw": cheat_move}
                     self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
                     player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
@@ -1890,7 +1922,8 @@ class GameController:
             else:
                 target_rank_symbol = self._normalize_rank_symbol(entry.get("new_rank"))
                 if target_rank_symbol is None or target_rank_symbol not in RANK_TO_INT:
-                    await self.god_print(f"【上帝(警告)】: {player_name} 提供的目标点数无效: {entry.get('new_rank')}。", 0.5)
+                    await self.god_print(f"【上帝(警告)】: {player_name} 提供的目标点数无效: {entry.get('new_rank')}。",
+                                         0.5)
                     log_payload = {"success": False, "error": "点数无效", "raw": cheat_move}
                     self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
                     player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
@@ -1923,6 +1956,15 @@ class GameController:
                 f"【上帝(抓现行)】: {player_name} 偷换牌被巡逻荷官发现！({len(modifications)} 张, 类型: {cheat_type_raw})",
                 0.5
             )
+
+            # --- [修复 5.5]：增加全局警戒值 ---
+            old_alert = self.global_alert_level
+            self.global_alert_level = min(100.0, self.global_alert_level + self.CHEAT_ALERT_INCREASE)
+            await self.god_print(
+                f"【安保提示】: 全局警戒值上升！ {old_alert:.1f} -> {self.global_alert_level:.1f}", 0.5
+            )
+            # --- [修复 5.5 结束] ---
+
             log_payload = {
                 "success": False,
                 "detected": True,
@@ -2030,7 +2072,8 @@ class GameController:
         accuser_state = game.state.players[accuser_id]
 
         if accuser_state.chips < cost:
-            await self.god_print(f"{accuser_name} 筹码不足 ({accuser_state.chips}) 支付指控成本 ({cost})。指控自动失败。", 1)
+            await self.god_print(f"{accuser_name} 筹码不足 ({accuser_state.chips}) 支付指控成本 ({cost})。指控自动失败。",
+                                 1)
             return False
 
         accuser_state.chips -= cost
@@ -2253,7 +2296,8 @@ class GameController:
                     game._force_showdown()
                     await self.god_panel_update(self._build_panel_data(game, start_player_id))
                     continue
-                await self.god_print(f"跳过 {current_player_obj.name} (状态: {'All-In' if p_state.all_in else '已弃牌'})", 0.5)
+                await self.god_print(
+                    f"跳过 {current_player_obj.name} (状态: {'All-In' if p_state.all_in else '已弃牌'})", 0.5)
                 game._handle_next_turn()
                 await self.god_panel_update(self._build_panel_data(game, start_player_id))
                 continue
@@ -2306,7 +2350,8 @@ class GameController:
                 if (player_action == "FOLD" and
                         ("失败" in player_mood or "错误" in player_mood or "超时" in player_mood)):
                     error_reason = action_json.get("reason", "(原因未知)")
-                    await self.god_print(f"【上帝(错误详情)】: [{current_player_obj.name}] 决策失败并强制弃牌，原因: {error_reason}", 0.5)
+                    await self.god_print(
+                        f"【上帝(错误详情)】: [{current_player_obj.name}] 决策失败并强制弃牌，原因: {error_reason}", 0.5)
                 # --- 调试块结束 ---
 
             cheat_context = await self._handle_cheat_move(game, current_player_idx, action_json.get("cheat_move"))

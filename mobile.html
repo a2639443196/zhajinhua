@@ -340,6 +340,10 @@
             </div>
         </div>
         <div class="panel-grid" id="panel-players"></div>
+        <div class="summary-item">
+            <span>作弊警戒值</span>
+            <strong id="panel-alert-level" style="color: #4caf50;">0.0</strong>
+        </div>
     </section>
 
     <section class="card log-card">
@@ -439,13 +443,13 @@
 
     startButton.onclick = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "START_GAME" }));
+            ws.send(JSON.stringify({type: "START_GAME"}));
         }
     };
 
     stopButton.onclick = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "STOP_GAME" }));
+            ws.send(JSON.stringify({type: "STOP_GAME"}));
         }
     };
 
@@ -479,6 +483,22 @@
         const handCountSpan = document.getElementById("panel-hand-count");
         const potSpan = document.getElementById("panel-current-pot");
         const playersContainer = document.getElementById("panel-players");
+
+        // --- [修复 5.7]：更新警戒值 ---
+        const alertLevelEl = document.getElementById("panel-alert-level");
+        if (alertLevelEl) {
+            const alertLevel = data.global_alert_level ?? 0;
+            alertLevelEl.textContent = alertLevel.toFixed(1);
+            // (新) 动态变色
+            if (alertLevel >= 100) {
+                alertLevelEl.style.color = "var(--danger)";
+            } else if (alertLevel > 50) {
+                alertLevelEl.style.color = "rgba(255, 193, 7, 0.9)"; // 黄色
+            } else {
+                alertLevelEl.style.color = "var(--success)"; // 绿色
+            }
+        }
+        // --- [修复 5.7 结束] ---
 
         handCountSpan.textContent = data.hand_count ?? 0;
         potSpan.textContent = data.current_pot ?? 0;
