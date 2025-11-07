@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Callable, Awaitable, Tuple, Optional
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
-from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT
+from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType
 from player import Player
 
 
@@ -115,6 +115,13 @@ class GameController:
         # (新) 用于在解析动作后输出额外的警告信息
         self._parse_warnings: List[str] = []
 
+        self.player_system_messages: Dict[int, List[str]] = {i: [] for i in range(self.num_players)}
+        self._hand_starting_chips: List[int] = [default_chips] * self.num_players
+        self._hand_start_persistent: List[int] = list(self.persistent_chips)
+        self._current_ante_distribution: List[int] = [0] * self.num_players
+        self._redeal_requested: bool = False
+        self._queued_messages: List[tuple[str, float]] = []
+
         self._suit_alias_map = {
             "♠": "♠", "黑桃": "♠", "黑心": "♠", "spade": "♠", "spades": "♠",
             "♥": "♥", "红桃": "♥", "红心": "♥", "heart": "♥", "hearts": "♥",
@@ -220,6 +227,281 @@ class GameController:
 
     def _get_effects_for_player(self, player_id: int) -> List[Dict[str, object]]:
         return [effect for effect in self.active_effects if effect.get("target_id") == player_id]
+
+    def _clear_system_messages(self) -> None:
+        for msg_list in self.player_system_messages.values():
+            msg_list.clear()
+
+    def _append_system_message(self, player_id: int, message: str) -> None:
+        if player_id not in self.player_system_messages:
+            self.player_system_messages[player_id] = []
+        self.player_system_messages[player_id].append(message)
+
+    def _queue_message(self, text: str, delay: float = 0.5) -> None:
+        self._queued_messages.append((text, delay))
+
+    async def _flush_queued_messages(self) -> None:
+        while self._queued_messages:
+            text, delay = self._queued_messages.pop(0)
+            await self.god_print(text, delay)
+
+    def _find_effect(self, player_id: int, effect_id: str) -> Optional[Dict[str, object]]:
+        for effect in self.active_effects:
+            if effect.get("target_id") == player_id and effect.get("effect_id") == effect_id:
+                return effect
+        return None
+
+    def _consume_effect(self, player_id: int, effect_id: str) -> Optional[Dict[str, object]]:
+        effect = self._find_effect(player_id, effect_id)
+        if effect:
+            try:
+                self.active_effects.remove(effect)
+            except ValueError:
+                pass
+        return effect
+
+    def _player_has_effect(self, player_id: int, effect_id: str) -> bool:
+        return self._find_effect(player_id, effect_id) is not None
+
+    def _get_visible_chips(self, viewer_id: int, subject_id: int, actual_chips: int) -> str:
+        if viewer_id != subject_id and self._player_has_effect(subject_id, "chip_invisible"):
+            return "???"
+        return str(actual_chips)
+
+    def _format_card(self, card: Card) -> str:
+        return INT_TO_RANK[card.rank] + SUITS[card.suit]
+
+    def _get_next_active_player(self, game: ZhajinhuaGame, start_idx: int) -> Optional[int]:
+        st = game.state
+        candidate = start_idx
+        for _ in range(self.num_players):
+            candidate = (candidate + 1) % self.num_players
+            player_state = st.players[candidate]
+            if player_state.alive and not player_state.all_in:
+                return candidate
+        return None
+
+    def _check_peek_blockers(self, attacker_id: int, target_id: int) -> tuple[bool, Optional[str]]:
+        attacker_name = self.players[attacker_id].name
+        target_name = self.players[target_id].name
+
+        reflect_effect = self._consume_effect(target_id, "peek_reflect")
+        if reflect_effect:
+            self._append_system_message(target_id, f"{attacker_name} 试图窥探你，但被反窥镜识破。")
+            self._queue_message(
+                f"【安保反制】{target_name} 的反窥镜反弹了 {attacker_name} 的窥探，并暴露了对方身份。",
+                0.5
+            )
+            return True, f"反窥镜反弹，{attacker_name} 行动失败"
+
+        if self._player_has_effect(target_id, "anti_peek_once"):
+            return True, f"{target_name} 被反侦测烟雾笼罩，窥探失败。"
+
+        if self._player_has_effect(target_id, "peek_shield"):
+            return True, f"{target_name} 处于屏蔽状态，窥探失败。"
+
+        return False, None
+
+    def _record_hand_start_state(self, game: ZhajinhuaGame) -> None:
+        self._hand_starting_chips = [ps.chips for ps in game.state.players]
+
+    def _apply_luck_boost(self, game: ZhajinhuaGame, player_id: int) -> None:
+        effect = self._consume_effect(player_id, "luck_boost")
+        if not effect:
+            return
+
+        player_state = game.state.players[player_id]
+        if not player_state.hand or not game.state.deck:
+            return
+
+        hand_rank = evaluate_hand(player_state.hand)
+        if hand_rank.hand_type >= HandType.PAIR:
+            # 已经不错了，不再调整
+            return
+
+        lowest_index = min(range(len(player_state.hand)), key=lambda idx: player_state.hand[idx].rank)
+        deck = game.state.deck
+        high_card_index = None
+        for idx, card in enumerate(deck):
+            if card.rank >= RANK_TO_INT["J"]:
+                high_card_index = idx
+                break
+        if high_card_index is None and deck:
+            high_card_index = 0
+        if high_card_index is None:
+            return
+
+        new_card = deck.pop(high_card_index)
+        old_card = player_state.hand[lowest_index]
+        player_state.hand[lowest_index] = new_card
+        deck.append(old_card)
+        random.shuffle(deck)
+
+        self._append_system_message(
+            player_id,
+            f"幸运币发挥作用，将 {self._format_card(old_card)} 替换成了 {self._format_card(new_card)}。"
+        )
+        self._queue_message(
+            f"【道具生效】{self.players[player_id].name} 的幸运币闪耀，手牌被系统重新调整。",
+            0.5
+        )
+
+    def _apply_bad_luck_guard(self, game: ZhajinhuaGame, player_id: int) -> None:
+        effect = self._find_effect(player_id, "bad_luck_guard")
+        if not effect:
+            return
+
+        data = effect.setdefault("data", {})
+        streak = int(data.get("streak", 0))
+        player_state = game.state.players[player_id]
+        hand_rank = evaluate_hand(player_state.hand)
+
+        def is_bad_hand() -> bool:
+            if hand_rank.hand_type == HandType.HIGH_CARD:
+                highest_rank = max(card.rank for card in player_state.hand)
+                return highest_rank < RANK_TO_INT["Q"]
+            return False
+
+        if is_bad_hand():
+            streak += 1
+            if streak >= 3:
+                deck = game.state.deck
+                if len(deck) >= 3:
+                    deck.extend(player_state.hand)
+                    random.shuffle(deck)
+                    player_state.hand = [deck.pop() for _ in range(3)]
+                    new_rank = evaluate_hand(player_state.hand)
+                    self._append_system_message(
+                        player_id,
+                        "护运珠触发，系统重新发给你一手新牌。"
+                    )
+                    self._queue_message(
+                        f"【道具生效】护运珠阻止了第 3 次烂牌，{self.players[player_id].name} 获得了新手牌 (牌型: {new_rank.hand_type.name})。",
+                        0.5
+                    )
+                    streak = 0
+            data["streak"] = streak
+        else:
+            data["streak"] = 0
+
+    def _apply_start_of_hand_effects(self, game: ZhajinhuaGame) -> None:
+        for idx, ps in enumerate(game.state.players):
+            if not ps.alive:
+                continue
+            self._apply_luck_boost(game, idx)
+            self._apply_bad_luck_guard(game, idx)
+
+    def _handle_compare_resolution(self, game: ZhajinhuaGame, attacker: int, defender: int,
+                                   result: int, loser: int) -> dict:
+        attacker_name = self.players[attacker].name
+        defender_name = self.players[defender].name
+
+        decline_effect = self._consume_effect(defender, "compare_decline")
+        if decline_effect:
+            self._append_system_message(defender, "免比符触发，本次比牌已拒绝。")
+            self._queue_message(
+                f"【道具生效】{defender_name} 启动了免比符，拒绝与 {attacker_name} 比牌。",
+                0.5
+            )
+            return {"action": "cancel"}
+
+        reverse_owner: Optional[int] = None
+        reverse_effect = self._consume_effect(attacker, "compare_reverse")
+        if not reverse_effect:
+            reverse_effect = self._consume_effect(defender, "compare_reverse")
+            if reverse_effect:
+                reverse_owner = defender
+        else:
+            reverse_owner = attacker
+
+        final_loser = loser
+        if reverse_owner is not None:
+            final_loser = attacker if loser == defender else defender
+            owner_name = self.players[reverse_owner].name
+            self._queue_message(
+                f"【道具生效】{owner_name} 使用了反转卡，当前比牌结果被颠倒。",
+                0.5
+            )
+
+        if result == 0:
+            return {"loser": None}
+
+        if final_loser is None:
+            return {}
+
+        if self._consume_effect(final_loser, "compare_draw"):
+            self._queue_message(
+                f"【道具生效】{self.players[final_loser].name} 的护牌罩触发，本次比牌改判为平局。",
+                0.5
+            )
+            return {"action": "draw"}
+
+        if self._consume_effect(final_loser, "compare_second_chance"):
+            self._queue_message(
+                f"【道具生效】{self.players[final_loser].name} 的免死金牌发动，逃过此次比牌淘汰。",
+                0.5
+            )
+            return {"action": "draw"}
+
+        return {"loser": final_loser}
+
+    def _apply_post_hand_effects(self, game: ZhajinhuaGame, winner_id: Optional[int],
+                                 final_pot_size: int) -> List[tuple[str, float]]:
+        messages: List[tuple[str, float]] = []
+
+        if winner_id is not None and final_pot_size > 0:
+            if self._consume_effect(winner_id, "double_win"):
+                game.state.players[winner_id].chips += final_pot_size
+                messages.append(
+                    (f"【道具结算】{self.players[winner_id].name} 的双倍卡生效，额外赢得 {final_pot_size} 筹码。", 0.5)
+                )
+
+            bonus_effect = self._find_effect(winner_id, "win_bonus")
+            if bonus_effect:
+                ratio = bonus_effect.get("bonus_ratio", 0.25)
+                bonus_amount = max(20, int(final_pot_size * ratio))
+                game.state.players[winner_id].chips += bonus_amount
+                messages.append(
+                    (f"【道具结算】财神符赐福，{self.players[winner_id].name} 额外获得 {bonus_amount} 筹码。", 0.5)
+                )
+
+        for idx in range(self.num_players):
+            effect = self._find_effect(idx, "win_streak_boost")
+            if not effect:
+                continue
+            data = effect.setdefault("data", {})
+            streak = int(data.get("streak", 0))
+            if winner_id is not None and idx == winner_id:
+                streak += 1
+                if streak >= 3 and final_pot_size > 0:
+                    game.state.players[idx].chips += final_pot_size
+                    messages.append(
+                        (f"【道具结算】{self.players[idx].name} 连胜三局，收益翻倍再得 {final_pot_size} 筹码。", 0.5)
+                    )
+                    streak = 0
+                data["streak"] = streak
+            else:
+                data["streak"] = 0
+
+        for effect in list(self.active_effects):
+            if effect.get("effect_id") != "loss_refund":
+                continue
+            hand_id = effect.get("hand_id")
+            player_id = effect.get("target_id")
+            if hand_id != self.hand_count or player_id is None:
+                continue
+            refund_amount = int(effect.get("refund", 0))
+            if refund_amount > 0:
+                start_chips = self._hand_starting_chips[player_id]
+                end_chips = game.state.players[player_id].chips
+                if end_chips < start_chips:
+                    game.state.players[player_id].chips += refund_amount
+                    messages.append(
+                        (f"【道具结算】定输免赔返还 {refund_amount} 筹码给 {self.players[player_id].name}。", 0.5)
+                    )
+            self.active_effects.remove(effect)
+
+        return messages
 
     async def _run_auction_phase(self):
         if not self.item_catalog:
@@ -391,35 +673,88 @@ class GameController:
             effect_name = effect.get("effect_name", effect.get("effect_id", "未知效果"))
             await self.god_print(f"【道具效果结束】{target_name} 的 {effect_name} 已失效。", 0.5)
 
-    async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]):
+    async def _handle_item_effect(self, game: ZhajinhuaGame, player_id: int, item_payload: Dict[str, object]) -> Optional[Dict[str, object]]:
         if not isinstance(item_payload, dict):
             await self.god_print(f"【系统提示】道具使用数据无效，操作被忽略。", 0.5)
-            return
+            return None
 
         item_id = item_payload.get("item_id")
         if not item_id:
             await self.god_print(f"【系统提示】未指定要使用的道具。", 0.5)
-            return
+            return None
 
         player = self.players[player_id]
         if item_id not in player.inventory:
             await self.god_print(f"【系统提示】{player.name} 试图使用未持有的道具 {item_id}。", 0.5)
-            return
+            return None
 
         item_info = self.item_catalog.get(item_id, {})
+        player_state = game.state.players[player_id]
 
-        def consume_item():
+        def consume_item() -> None:
             try:
                 player.inventory.remove(item_id)
             except ValueError:
                 pass
 
+        result_flags: Dict[str, object] = {}
+
+        if item_id == "ITM_001":  # 换牌卡
+            if not player_state.hand or not game.state.deck:
+                await self.god_print("【系统提示】牌堆不足，无法换牌。", 0.5)
+                return None
+            consume_item()
+            try:
+                card_index = int(item_payload.get("card_index", -1)) - 1
+            except (TypeError, ValueError):
+                card_index = -1
+            if card_index not in range(len(player_state.hand)):
+                card_index = random.randrange(len(player_state.hand))
+            old_card = player_state.hand[card_index]
+            game.state.deck.append(old_card)
+            random.shuffle(game.state.deck)
+            new_card = game.state.deck.pop()
+            player_state.hand[card_index] = new_card
+            self._append_system_message(
+                player_id,
+                f"换牌卡替换了 {self._format_card(old_card)} -> {self._format_card(new_card)}。"
+            )
+            await self.god_print(f"【道具生效】{player.name} 更换了一张手牌。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_002":  # 窥牌镜
+            target_name = item_payload.get("target_name")
+            target_id = self._find_player_by_name(target_name) if target_name else None
+            if target_id is None or not game.state.players[target_id].alive:
+                await self.god_print("【系统提示】必须指定一名仍在局内的目标。", 0.5)
+                return None
+            consume_item()
+            blocked, reason = self._check_peek_blockers(player_id, target_id)
+            if blocked:
+                await self.god_print(f"【道具受阻】{player.name} 的窥牌尝试失败：{reason}", 0.5)
+                return result_flags
+            target_hand = game.state.players[target_id].hand
+            if not target_hand:
+                await self.god_print("【系统提示】目标暂无可窥视的手牌。", 0.5)
+                return result_flags
+            try:
+                card_index = int(item_payload.get("card_index", -1)) - 1
+            except (TypeError, ValueError):
+                card_index = -1
+            if card_index not in range(len(target_hand)):
+                card_index = random.randrange(len(target_hand))
+            peek_card = target_hand[card_index]
+            card_str = self._format_card(peek_card)
+            self._append_system_message(player_id, f"窥牌镜看到 {self.players[target_id].name} 的 {card_str}。")
+            await self.god_print(f"【道具生效】{player.name} 使用窥牌镜窥视了 {self.players[target_id].name} 的一张暗牌。", 0.5)
+            return result_flags
+
         if item_id == "ITM_003":  # 锁筹卡
             target_name = item_payload.get("target_name")
             target_id = self._find_player_by_name(target_name) if target_name else None
             if target_id is None or not game.state.players[target_id].alive:
-                await self.god_print(f"【系统提示】锁筹卡需要指定一名仍在牌局中的对手。", 0.5)
-                return
+                await self.god_print("【系统提示】锁筹卡需要指定一名仍在牌局中的对手。", 0.5)
+                return None
             consume_item()
             effect_payload = {
                 "effect_id": "lock_raise",
@@ -435,35 +770,330 @@ class GameController:
                 f"【道具生效】{player.name} 对 {self.players[target_id].name} 使用了锁筹卡，其下一次行动无法 RAISE。",
                 0.5
             )
-            return
+            return result_flags
 
-        if item_id == "ITR_001":  # 护身符
+        if item_id == "ITM_004":  # 双倍卡
             consume_item()
-            effect_payload = {
-                "effect_id": "talisman",
+            self.active_effects.append({
+                "effect_id": "double_win",
+                "effect_name": item_info.get("name", "双倍卡"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "hand_id": self.hand_count,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 激活双倍卡，若本局获胜将额外翻倍收益。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_005":  # 免死金牌
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "compare_second_chance",
+                "effect_name": item_info.get("name", "免死金牌"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 装备免死金牌，下一次比牌失败时可死里逃生。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_006":  # 偷看卡
+            alive_targets = [i for i, ps in enumerate(game.state.players) if ps.alive and i != player_id]
+            if not alive_targets:
+                await self.god_print("【系统提示】暂无可偷看的对手。", 0.5)
+                return None
+            target_id = random.choice(alive_targets)
+            consume_item()
+            blocked, reason = self._check_peek_blockers(player_id, target_id)
+            if blocked:
+                await self.god_print(f"【道具受阻】偷看卡失效：{reason}", 0.5)
+                return result_flags
+            target_hand = game.state.players[target_id].hand
+            if not target_hand:
+                await self.god_print("【系统提示】目标暂无可偷看的手牌。", 0.5)
+                return result_flags
+            peek_card = random.choice(target_hand)
+            card_str = self._format_card(peek_card)
+            self._append_system_message(player_id, f"偷看卡窥见 {self.players[target_id].name} 的 {card_str}。")
+            await self.god_print(f"【道具生效】{player.name} 偷看了 {self.players[target_id].name} 的一张暗牌。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_007":  # 调牌符
+            if not game.state.deck:
+                await self.god_print("【系统提示】牌堆耗尽，无法重新洗牌。", 0.5)
+                return None
+            consume_item()
+            game.state.deck.extend(player_state.hand)
+            random.shuffle(game.state.deck)
+            player_state.hand = [game.state.deck.pop() for _ in range(3)]
+            await self.god_print(f"【道具生效】{player.name} 重新洗发了手牌。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_008":  # 顺手换牌
+            target_name = item_payload.get("target_name")
+            target_id = self._find_player_by_name(target_name) if target_name else None
+            if target_id is None or not game.state.players[target_id].alive:
+                await self.god_print("【系统提示】顺手换牌需要指定一名仍在牌局中的目标。", 0.5)
+                return None
+            target_state = game.state.players[target_id]
+            if not player_state.hand or not target_state.hand:
+                await self.god_print("【系统提示】双方手牌不足，无法交换。", 0.5)
+                return None
+            consume_item()
+            try:
+                my_index = int(item_payload.get("my_index", -1)) - 1
+            except (TypeError, ValueError):
+                my_index = -1
+            if my_index not in range(len(player_state.hand)):
+                my_index = random.randrange(len(player_state.hand))
+            try:
+                target_index = int(item_payload.get("target_index", -1)) - 1
+            except (TypeError, ValueError):
+                target_index = -1
+            if target_index not in range(len(target_state.hand)):
+                target_index = random.randrange(len(target_state.hand))
+            player_card = player_state.hand[my_index]
+            target_card = target_state.hand[target_index]
+            player_state.hand[my_index], target_state.hand[target_index] = target_card, player_card
+            await self.god_print(
+                f"【道具生效】{player.name} 与 {self.players[target_id].name} 顺手交换了各自的一张牌。",
+                0.5
+            )
+            return result_flags
+
+        if item_id == "ITM_009":  # 免比符
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "compare_decline",
+                "effect_name": item_info.get("name", "免比符"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 持有免比符，可拒绝一次被迫比牌。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_010":  # 全开卡
+            consume_item()
+            await self.god_print(f"【道具生效】{player.name} 启动全开卡，所有玩家必须亮牌！", 0.5)
+            for idx, ps in enumerate(game.state.players):
+                if not ps.alive:
+                    continue
+                hand_str = " ".join(self._format_card(card) for card in ps.hand)
+                await self.god_print(f"  - {self.players[idx].name} 的手牌: {hand_str}", 0.5)
+            return result_flags
+
+        if item_id == "ITM_011":  # 反转卡
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "compare_reverse",
+                "effect_name": item_info.get("name", "反转卡"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 准备颠倒下一次比牌的胜负。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_012":  # 压注加倍符
+            call_cost = game.get_call_cost(player_id)
+            if call_cost > player_state.chips:
+                await self.god_print("【系统提示】筹码不足，压注加倍符无法生效。", 0.5)
+                return None
+            consume_item()
+            if call_cost > 0:
+                try:
+                    game.step(Action(player=player_id, type=ActionType.CALL))
+                except Exception as exc:
+                    await self.god_print(f"【系统提示】自动跟注失败: {exc}", 0.5)
+                    return None
+                result_flags["skip_action"] = True
+                result_flags["panel_refresh"] = True
+                await self.god_print(f"【道具生效】{player.name} 自动完成跟注。", 0.5)
+            next_player = self._get_next_active_player(game, player_id)
+            if next_player is not None:
+                self.active_effects.append({
+                    "effect_id": "force_double_raise",
+                    "effect_name": item_info.get("name", "压注加倍符"),
+                    "source_id": player_id,
+                    "target_id": next_player,
+                    "turns_left": 1,
+                    "category": "debuff",
+                    "expires_after_action": True
+                })
+                self._queue_message(
+                    f"【道具生效】{self.players[next_player].name} 被迫在下一回合加倍下注。",
+                    0.5
+                )
+            return result_flags
+
+        if item_id == "ITM_013":  # 定输免赔
+            consume_item()
+            ante_paid = self._current_ante_distribution[player_id] if self._current_ante_distribution else 0
+            refund_amount = max(10, ante_paid // 2) if ante_paid else 20
+            self.active_effects.append({
+                "effect_id": "loss_refund",
+                "effect_name": item_info.get("name", "定输免赔"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "hand_id": self.hand_count,
+                "refund": refund_amount,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 获得定输免赔保护，若落败可返还 {refund_amount} 筹码。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_014":  # 重发令
+            consume_item()
+            self._redeal_requested = True
+            await self.god_print(f"【道具生效】{player.name} 发布重发令，本局将立即重开。", 0.5)
+            result_flags["restart_hand"] = True
+            return result_flags
+
+        if item_id == "ITM_015":  # 护身符
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "compare_immunity",
                 "effect_name": item_info.get("name", "护身符"),
                 "source_id": player_id,
                 "target_id": player_id,
                 "turns_left": 2,
                 "category": "buff"
-            }
-            self.active_effects.append(effect_payload)
-            await self.god_print(
-                f"【道具生效】{player.name} 启动护身符，在接下来 2 手牌内不能被指定比牌。",
-                0.5
-            )
-            return
+            })
+            await self.god_print(f"【道具生效】{player.name} 启动护身符，两轮内无法被点名比牌。", 0.5)
+            return result_flags
 
-        if item_id == "VIS_001":
+        if item_id == "ITM_016":  # 反侦测烟雾
             consume_item()
-            await self.god_print(f"【娱乐特效】{player.name} 点燃了烟花，等待胜利时绽放。", 0.5)
-            return
+            self.active_effects.append({
+                "effect_id": "anti_peek_once",
+                "effect_name": item_info.get("name", "反侦测烟雾"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 被烟雾笼罩，本轮窥探道具全部失效。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_017":  # 屏蔽卡
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "peek_shield",
+                "effect_name": item_info.get("name", "屏蔽卡"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 2,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 两轮内免疫窥探。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_018":  # 隐形符
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "chip_invisible",
+                "effect_name": item_info.get("name", "隐形符"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 的筹码暂时对他人隐形。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_019":  # 护运珠
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "bad_luck_guard",
+                "effect_name": item_info.get("name", "护运珠"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 3,
+                "category": "buff",
+                "data": {"streak": 0}
+            })
+            await self.god_print(f"【道具生效】{player.name} 受到护运珠庇护，连续烂牌将被阻断。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_020":  # 护牌罩
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "compare_draw",
+                "effect_name": item_info.get("name", "护牌罩"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 装备护牌罩，下一次比牌失败将改判平局。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_021":  # 反窥镜
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "peek_reflect",
+                "effect_name": item_info.get("name", "反窥镜"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 架起反窥镜，窥探者将原形毕露。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_022":  # 幸运币
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "luck_boost",
+                "effect_name": item_info.get("name", "幸运币"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 1,
+                "category": "buff"
+            })
+            await self.god_print(f"【道具生效】{player.name} 祈愿幸运，下轮起手牌将被系统庇佑。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_023":  # 财神符
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "win_bonus",
+                "effect_name": item_info.get("name", "财神符"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": 3,
+                "category": "buff",
+                "bonus_ratio": 0.25
+            })
+            await self.god_print(f"【道具生效】{player.name} 获得财神庇佑，未来三局胜利将额外得利。", 0.5)
+            return result_flags
+
+        if item_id == "ITM_024":  # 连胜加成
+            consume_item()
+            self.active_effects.append({
+                "effect_id": "win_streak_boost",
+                "effect_name": item_info.get("name", "连胜加成"),
+                "source_id": player_id,
+                "target_id": player_id,
+                "turns_left": None,
+                "category": "buff",
+                "data": {"streak": 0}
+            })
+            await self.god_print(f"【道具生效】{player.name} 开启连胜加成，三连胜将获得翻倍奖励。", 0.5)
+            return result_flags
 
         consume_item()
         await self.god_print(
             f"【系统提示】{player.name} 使用了 {item_info.get('name', item_id)}，目前效果尚未实装 (视为装饰)。",
             0.5
         )
+        return result_flags
 
     async def _handle_loan_request(self, game: ZhajinhuaGame, player_id: int, loan_payload: Dict[str, object]):
         if not isinstance(loan_payload, dict):
@@ -640,7 +1270,8 @@ class GameController:
                 status = "已看牌"
             else:
                 status = "未看牌"
-            status_line = f"  - {p_name}: 筹码={p.chips}, 状态={status}"
+            visible_chips = self._get_visible_chips(player_id, i, p.chips)
+            status_line = f"  - {p_name}: 筹码={visible_chips}, 状态={status}"
             state_summary_lines.append(status_line)
             player_status_list.append(status)
 
@@ -687,8 +1318,9 @@ class GameController:
 
             seat_role = " / ".join(seat_role_parts)
             status = player_status_list[seat_player_id] if seat_player_id < len(player_status_list) else "未知"
-            seat_chip_info = st.players[seat_player_id].chips if seat_player_id < len(st.players) else \
+            actual_chip_val = st.players[seat_player_id].chips if seat_player_id < len(st.players) else \
                 self.persistent_chips[seat_player_id]
+            seat_chip_info = self._get_visible_chips(player_id, seat_player_id, actual_chip_val)
             seating_lines.append(
                 f"  - {seat_role}: {seat_player.name} (筹码={seat_chip_info}, 状态={status})"
             )
@@ -743,6 +1375,8 @@ class GameController:
             if hand_num == self.hand_count and recipient == player_id:
                 sender_name = self.players[sender].name
                 secret_message_lines.append(f"  - [密信] 来自 {sender_name}: {message}")
+        for message in self.player_system_messages.get(player_id, []):
+            secret_message_lines.append(f"  - [系统情报]: {message}")
         received_secret_messages_str = "\n".join(secret_message_lines) if secret_message_lines else "你没有收到任何秘密消息。"
 
         min_raise_increment = st.config.min_raise
@@ -887,7 +1521,7 @@ class GameController:
             if err:
                 return Action(player=player_id,
                               type=ActionType.FOLD), f"警告: {self.players[player_id].name} COMPARE 失败: {err}。强制弃牌。"
-            if any(effect.get("effect_id") == "talisman" for effect in self._get_effects_for_player(target_id)):
+            if any(effect.get("effect_id") == "compare_immunity" for effect in self._get_effects_for_player(target_id)):
                 return Action(player=player_id,
                               type=ActionType.FOLD), (
                     f"警告: {self.players[player_id].name} 试图比牌的目标受到护身符保护，操作无效。强制弃牌。"
@@ -1387,6 +2021,12 @@ class GameController:
         config.base_bet = per_player_base
         config.base_bet_distribution = ante_distribution
 
+        self._clear_system_messages()
+        self._queued_messages.clear()
+        self._hand_start_persistent = list(self.persistent_chips)
+        self._current_ante_distribution = ante_distribution
+        self._redeal_requested = False
+
         alive_for_ante = sum(1 for amount in ante_distribution if amount > 0)
         if alive_for_ante > 0:
             await self.god_print(
@@ -1395,8 +2035,15 @@ class GameController:
             )
 
         game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
+        game.set_event_listener(
+            "before_compare_resolution",
+            lambda **kwargs: self._handle_compare_resolution(game, **kwargs)
+        )
 
         await self._check_loan_repayments(game)
+
+        self._record_hand_start_state(game)
+        self._apply_start_of_hand_effects(game)
 
         self.player_observed_moods.clear()
         self.player_last_speech.clear()
@@ -1416,6 +2063,7 @@ class GameController:
                     0.5)
 
         await self.god_print("--- 初始发牌 (上帝视角已在看板) ---", 1)
+        await self._flush_queued_messages()
 
         while not game.state.finished:
             if self.get_alive_player_count() <= 1:
@@ -1497,7 +2145,17 @@ class GameController:
 
             item_to_use = action_json.get("use_item")
             if item_to_use:
-                await self._handle_item_effect(game, current_player_idx, item_to_use)
+                item_result = await self._handle_item_effect(game, current_player_idx, item_to_use)
+                if item_result:
+                    if item_result.get("panel_refresh"):
+                        await self.god_panel_update(self._build_panel_data(game, start_player_id))
+                    await self._flush_queued_messages()
+                    if item_result.get("restart_hand"):
+                        break
+                    if item_result.get("skip_action"):
+                        continue
+
+            await self._flush_queued_messages()
 
             loan_request = action_json.get("loan_request")
             if loan_request:
@@ -1540,11 +2198,13 @@ class GameController:
             try:
                 game.step(action_obj)
                 await self.god_panel_update(self._build_panel_data(game, start_player_id))
+                await self._flush_queued_messages()
             except Exception as e:
                 await self.god_print(f"!! 动作执行失败: {e}。强制玩家 {current_player_obj.name} 弃牌。", 0)
                 if not game.state.finished:
                     game.step(Action(player=current_player_idx, type=ActionType.FOLD))
                     await self.god_panel_update(self._build_panel_data(game, start_player_id))
+                await self._flush_queued_messages()
 
             current_player_obj.update_experience_after_action(
                 action_json,
@@ -1568,15 +2228,29 @@ class GameController:
 
             await asyncio.sleep(1)
 
+        if self._redeal_requested:
+            self._redeal_requested = False
+            self.persistent_chips = list(self._hand_start_persistent)
+            self.secret_message_log = [entry for entry in self.secret_message_log if entry[0] != self.hand_count]
+            self.cheat_action_log = [entry for entry in self.cheat_action_log if entry[0] != self.hand_count]
+            await self.god_print("【系统提示】重发令生效，本手作废并重新发牌。", 0.5)
+            await self.god_panel_update(self._build_panel_data(None, -1))
+            return await self.run_round(start_player_id)
+
         if not game.state.finished:
             game._force_showdown()
 
+        final_pot_size = game.state.pot_at_showdown
+        winner_id = game.state.winner
+        for text, delay in self._apply_post_hand_effects(game, winner_id, final_pot_size):
+            await self.god_print(text, delay)
+
         await self.god_print(f"--- 本手结束 ---", 1)
         winner_name = "N/A"
-        if game.state.winner is not None:
-            winner_name = self.players[game.state.winner].name
+        if winner_id is not None:
+            winner_name = self.players[winner_id].name
             await self.god_print(f"赢家是 {winner_name}!", 1)
-            self.last_winner_id = game.state.winner
+            self.last_winner_id = winner_id
         else:
             await self.god_print("没有赢家 (流局)。", 1)
 
@@ -1591,9 +2265,6 @@ class GameController:
         await self.god_panel_update(self._build_panel_data(None, -1))
 
         # --- [新] 经验系统 V2：调用获胜者奖励 ---
-        winner_id = game.state.winner
-        final_pot_size = game.state.pot_at_showdown  # (来自步骤一)
-
         if winner_id is not None and final_pot_size > 0:
             winner_obj = self.players[winner_id]
             if winner_obj.alive:
