@@ -548,7 +548,7 @@ class GameController:
         last_raise_amount = 1
         is_first_bid_placed = False
 
-        max_auction_rounds = 10
+        max_auction_rounds = 5
         round_count = 0
 
         while round_count < max_auction_rounds and len(active_bidders) > 1:
