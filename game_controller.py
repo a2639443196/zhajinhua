@@ -3,16 +3,16 @@ import json
 import asyncio
 import random
 from pathlib import Path
-from typing import List, Dict, Callable, Awaitable, Tuple, Optional
+from typing import List, Dict, Callable, Awaitable, Tuple, Optional, Set
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
-from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType
+from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType, PlayerState
 from player import Player
 
 BASE_DIR = Path(__file__).parent.resolve()
 ITEM_STORE_PATH = BASE_DIR / "items_store.json"
 AUCTION_PROMPT_PATH = BASE_DIR / "prompt/auction_bid_prompt.txt"
-
+USED_PERSONA_PATH = BASE_DIR / "used_personas.json" # <-- 📌 新增人设记录路径
 
 class SystemVault:
     """金库逻辑：(新) 根据经验和手牌强度评估贷款请求。"""
@@ -153,6 +153,7 @@ class GameController:
         # (最终概率将受经验和警戒值影响)
         self.LEAK_SECRET_MESSAGE_BASE = 0.20  # 密信基础泄露率
         self.LEAK_CHEAT_MOVE_BASE = 0.25  # 作弊基础泄露率
+        self.LEAK_BRIBE_MOVE_BASE = 0.40  # (新) 贿赂基础泄露率 (更高)
 
         try:
             with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
@@ -164,11 +165,47 @@ class GameController:
             self.item_catalog = {}
             print(f"【上帝(错误)】: 解析 {ITEM_STORE_PATH.name} 失败: {exc}。")
 
+            # --- [代码一致性修复]：集中加载所有 Prompt 模板 ---
+        self.prompt_templates = {}
+        prompt_paths = {
+            "auction": AUCTION_PROMPT_PATH,
+            "create_persona": BASE_DIR / "prompt/create_persona_prompt.txt",
+            "decide_action": BASE_DIR / "prompt/decide_action_prompt.txt",
+            "defend": BASE_DIR / "prompt/defend_prompt.txt",
+            "reflect": BASE_DIR / "prompt/reflect_prompt_template.txt",
+            "vote": BASE_DIR / "prompt/vote_prompt.txt",
+            "bribe": BASE_DIR / "prompt/bribe_prompt.txt",  # <-- [新功能] 增加贿赂 Prompt
+
+        }
+        for name, path in prompt_paths.items():
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self.prompt_templates[name] = f.read().strip()
+            except Exception as e:
+                self.prompt_templates[name] = ""  # 存入空字符串以防 KeyError
+                print(f"【上帝(严重警告)】: 加载 Prompt 模板 {path.name} 失败: {e}")
+        # --- [修复结束] ---
+
         self.vault = SystemVault()
         self.active_effects: List[Dict[str, object]] = []
 
         default_chips = GameConfig.initial_chips
         self.persistent_chips: List[int] = [default_chips] * self.num_players
+
+        # --- [人设记录] 加载已使用的代号 (现在是完整的文本) ---
+        self.used_personas: Set[str] = set()
+        try:
+            if USED_PERSONA_PATH.exists():
+                with USED_PERSONA_PATH.open("r", encoding="utf-8") as fp:
+                    content = fp.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        # 📌 关键：从简化的 [{"text": ...}, ...] 格式中提取完整的文本
+                        self.used_personas.update(p.get("text") for p in data if p.get("text"))
+        except Exception as exc:
+            # 这里的 exc 可能是 json.JSONDecodeError 或其他，均视为加载失败
+            print(f"【上帝(警告)】: 加载人设记录失败: {exc}。将从空白开始。")
+        # --- [修复结束] ---
 
         self.god_print = god_print_callback
         self.god_stream_start = god_stream_start_callback
@@ -240,6 +277,21 @@ class GameController:
         per_player_base = base_share + (1 if remainder > 0 else 0)
         return per_player_base, distribution, total_ante
 
+    def _get_player_max_bid_allowed(self, player_id: int) -> int:
+        """计算单个玩家在拍卖中的实际可出价上限"""
+        current_chips = self.persistent_chips[player_id]
+
+        # 1. 计算当前底注成本
+        _base, distribution, _total = self._build_ante_distribution()
+        ante_cost = distribution[player_id]
+
+        # 2. 计算安全缓冲 (例如 3 倍底注，最低 350)
+        safety_buffer = max(ante_cost * 3, 350)
+
+        # 3. 实际可出价上限 = 总筹码 - 安全缓冲
+        max_bid_allowed = max(0, current_chips - safety_buffer)
+        return max_bid_allowed
+
     def _build_panel_data(self, game: ZhajinhuaGame | None, start_player_id: int = -1) -> dict:
         # (已修改)
         players_data = []
@@ -267,9 +319,9 @@ class GameController:
                     if p_state.hand:
                         # --- (BUG 修复) ---
                         # sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True) # (错误)
-                        sorted_hand = sorted(p_state.hand, key=lambda c: c.rank, reverse=True)  # (正确)
+                        # sorted_hand = sorted(p_state.hand, key=lambda c: c.rank, reverse=True)  # (正确)
                         # --- (修复结束) ---
-                        hand_str = ' '.join([INT_TO_RANK[c.rank] + SUITS[c.suit] for c in sorted_hand])
+                        hand_str = ' '.join([INT_TO_RANK[c.rank] + SUITS[c.suit] for c in p_state.hand])
                     else:
                         hand_str = "..."
                 self.players[i].update_pressure_snapshot(player_chips, game.get_call_cost(i) if game else 0)
@@ -290,8 +342,10 @@ class GameController:
         return {
             "hand_count": self.hand_count,
             "current_pot": game.state.pot if game and game.state else 0,
-            "global_alert_level": round(self.global_alert_level, 1),  # (新)
-            "players": players_data
+            "global_alert_level": round(self.global_alert_level, 1),
+            "players": players_data,
+            # (↓ 新增此行 ↓)
+            "current_player": game.state.current_player if game and game.state else -1
         }
 
     def _select_item_for_auction(self) -> tuple[str, Dict[str, object]]:
@@ -304,7 +358,8 @@ class GameController:
 
     def _find_player_by_name(self, name: str) -> Optional[int]:
         for idx, player in enumerate(self.players):
-            if player.name.strip() == (name or "").strip():
+            # [健壮性修复]：改为不区分大小写的比较
+            if player.name.strip().lower() == (name or "").strip().lower():
                 return idx
         return None
 
@@ -586,6 +641,54 @@ class GameController:
 
         return messages
 
+    async def _settle_bribe_debts(self, game: ZhajinhuaGame) -> List[tuple[str, float]]:
+        """(新) 结算所有贿赂欠款"""
+        messages: List[tuple[str, float]] = []
+
+        for effect in list(self.active_effects):
+            if effect.get("effect_id") != "bribe_debt":
+                continue
+
+            player_id = effect.get("target_id")
+            if player_id is None:
+                self.active_effects.remove(effect)
+                continue
+
+            # 只结算本手牌的债务
+            if effect.get("hand_id") != self.hand_count:
+                continue
+
+            debt_amount = int(effect.get("amount", 0))
+            if debt_amount <= 0:
+                self.active_effects.remove(effect)
+                continue
+
+            player_state = game.state.players[player_id]
+            player_name = self.players[player_id].name
+
+            if player_state.chips >= debt_amount:
+                # 玩家赢了，并且奖金足够支付
+                player_state.chips -= debt_amount
+                messages.append(
+                    (f"【金库结算】: {player_name} 成功偿还了 {debt_amount} 筹码的贿赂欠款。", 0.5)
+                )
+            elif player_state.chips > 0:
+                # 玩家赢了，但奖金不够支付（例如赢了边池）
+                messages.append(
+                    (f"【金库结算】: {player_name} 赢了 {player_state.chips}，不足以偿还 {debt_amount} 欠款。筹码被清零！",
+                     0.5)
+                )
+                player_state.chips = 0
+            else:
+                # 玩家输了（chips=0），债务自动勾销（因为他们被淘汰了）
+                messages.append(
+                    (f"【金库结算】: {player_name} 在本局输光，贿赂欠款 {debt_amount} 自动勾销。", 0.3)
+                )
+
+            self.active_effects.remove(effect)
+
+        return messages
+
     async def _run_auction_phase(self):
         if not self.item_catalog:
             return
@@ -622,7 +725,24 @@ class GameController:
         max_auction_rounds = 4
         round_count = 0
 
+        # 📌 [效率优化] 计算全局有效出价上限
+        global_max_effective_bid = 0
+        if eligible_players:
+            # 找到所有符合竞拍资格玩家中的最高出价上限
+            max_bid_caps = [self._get_player_max_bid_allowed(i) for i in eligible_players]
+            if max_bid_caps:
+                global_max_effective_bid = max(max_bid_caps)
+
         while round_count < max_auction_rounds and len(active_bidders) > 1:
+
+            # 📌 [效率优化] 检查是否已达到有效上限
+            if is_first_bid_placed and current_highest_bid >= global_max_effective_bid:
+                await self.god_print(
+                    f"【系统拍卖行】: 当前出价 ({current_highest_bid}) 已达场上最高可出价上限 ({global_max_effective_bid})，拍卖提前结束。",
+                    0.8
+                )
+                break  # 提前结束循环
+
             round_count += 1
             await self.god_print(f"--- 拍卖第 {round_count}/{max_auction_rounds} 轮 ---", 0.5)
 
@@ -732,9 +852,13 @@ class GameController:
                               current_highest_bid: int = 0,
                               min_next_bid_to_raise: int = 0) -> Dict[str, object]:
         player = self.players[player_id]
-        try:
-            template = AUCTION_PROMPT_PATH.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        # try: # <-- [修复] 移除
+        #     template = AUCTION_PROMPT_PATH.read_text(encoding="utf-8") # <-- [修复] 移除
+        # except FileNotFoundError: # <-- [修复] 移除
+        #     return {"player_id": player_id, "bid": 0} # <-- [修复] 移除
+
+        template = self.prompt_templates.get("auction", "")  # <-- [修复] 使用加载的模板
+        if not template:  # <-- [修复] 添加检查
             return {"player_id": player_id, "bid": 0}
 
         # ( ... 省略 inventory_str 和 other_status 的构建 ...)
@@ -766,14 +890,17 @@ class GameController:
 
         # ( ... 省略 my_assets_str 和 item_value 的构建 ...)
         current_chips = self.persistent_chips[player_id]
+
+        # 📌 [代码简化] 使用辅助函数计算上限
+        max_bid_allowed = self._get_player_max_bid_allowed(player_id)
         _base, distribution, _total = self._build_ante_distribution()
         ante_cost = distribution[player_id]
-        safety_buffer = max(ante_cost * 3, 350)
-        max_bid_allowed = max(0, current_chips - safety_buffer)
+        safety_buffer = max(ante_cost * 3, 350)  # 重新计算 buffer 用于显示
+
         my_assets_str = f"""- 你的总筹码: {current_chips}
-    - 你的背包: {inventory_str}
-    - 【!! 重要警告 !!】: 你必须为下局保留 {safety_buffer} 筹码 (约 3 倍底注) 用于上桌。
-    - 【!! 你的实际可出价上限是: {max_bid_allowed} !!】"""
+            - 你的背包: {inventory_str}
+            - 【!! 重要警告 !!】: 你必须为下局保留 {safety_buffer} 筹码 (约 3 倍底注) 用于上桌。
+            - 【!! 你的实际可出价上限是: {max_bid_allowed} !!】"""
         item_value = "1 (请自行根据描述评估)"
 
         # --- [修复 11.2] 更新拍卖上下文 (无跟注) ---
@@ -928,6 +1055,7 @@ class GameController:
             )
             # (新) 将详情添加到上帝日志
             await self.god_print(f"【道具生效】{player.name} 使用换牌卡：【{card_old_str}】 替换为 【{card_new_str}】", 0.5)
+            result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
         if item_id == "ITM_002":  # 窥牌镜
@@ -1041,6 +1169,7 @@ class GameController:
             # (新) 获取新手牌详情
             new_hand_str = " ".join(self._format_card(card) for card in player_state.hand)
             await self.god_print(f"【道具生效】{player.name} 使用调牌符，新手牌为：【{new_hand_str}】", 0.5)
+            result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
         if item_id == "ITM_008":  # 顺手换牌
@@ -1084,6 +1213,7 @@ class GameController:
                 f"【道具生效】{player.name} (交出 {player_card_str}) 与 {target_name} (交出 {target_card_str}) 交换了手牌。",
                 0.5
             )
+            result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
         if item_id == "ITM_009":  # 免比符
@@ -1404,6 +1534,8 @@ class GameController:
         await self.god_print(f"--- 牌桌介绍开始 ---", 1.5)
         await self.god_print(f"（AI 正在为自己杜撰人设...）", 0.5)
 
+        final_personas_data = []  # 收集本轮所有玩家的人设数据 (需要保留在循环外定义)
+
         for i, player in enumerate(self.players):
             if self.persistent_chips[i] <= 0 and player.alive:
                 self.player_personas[i] = f"我是 {player.name} (已淘汰)"
@@ -1411,30 +1543,72 @@ class GameController:
 
             await self.god_stream_start(f"【上帝(赛前介绍)】: [{player.name}]: ")
 
-            intro_text = await player.create_persona(
+            # 📌 这里的 player.create_persona 逻辑被修改以适应新的返回格式
+            intro_text, alias = await player.create_persona(
+                self.prompt_templates.get("create_persona", ""),
+                list(self.used_personas),
                 stream_chunk_cb=self.god_stream_chunk
             )
 
             if "(创建人设时出错:" in intro_text:
                 await self.god_stream_chunk(f" {intro_text}")
+            else:
+                # 📌 简化记录逻辑，只记录完整的文本
+                if intro_text:
+                    self.used_personas.add(intro_text)
+                    final_personas_data.append({"text": intro_text})  # 只需要 text 字段
 
             await self.god_stream_chunk("\n")
 
             self.player_personas[i] = intro_text
-            self.players[i].register_persona(intro_text)  # (新) 初始化经验
+            self.players[i].register_persona(intro_text)
             await asyncio.sleep(0.5)
 
         await self.god_print(f"--- 牌桌介绍结束 ---", 2)
+
+        # --- [人设记录] 写入文件：立即执行 ---
+        try:
+            # 1. 找到所有现存的人设文本
+            all_saved_persona_texts = set()
+            if USED_PERSONA_PATH.exists():
+                with USED_PERSONA_PATH.open("r", encoding="utf-8") as fp:
+                    content = fp.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        all_saved_persona_texts.update(p.get("text") for p in data if p.get("text"))
+
+            # 2. 合并当前轮新生成的人设
+            all_saved_persona_texts.update(player.persona_text for player in self.players if player.persona_text)
+
+            # 3. 转换为最终的简化列表格式 [{"text": persona_text}, ...]
+            final_list = [{"text": text} for text in sorted(list(all_saved_persona_texts))]
+
+            with USED_PERSONA_PATH.open("w", encoding="utf-8") as fp:
+                json.dump(final_list, fp, ensure_ascii=False, indent=2)
+
+        except Exception as exc:
+            print(f"【上帝(警告)】: 写入人设记录失败: {exc}")
+        # --- [修复结束] ---
+
         await asyncio.sleep(3)
 
         while self.get_alive_player_count() > 1:
             self.hand_count += 1
-            start_player_id = (self.last_winner_id + 1) % self.num_players
+
+            # --- [起始玩家修复]：确保第一手牌从 P0 (索引 0) 开始 ---
+            if self.hand_count == 1:
+                start_player_id = 0
+                self.last_winner_id = self.num_players - 1  # 确保下一轮开始时 (self.last_winner_id + 1) % N = 0
+            else:
+                start_player_id = (self.last_winner_id + 1) % self.num_players
+            # --- [修复结束] ---
+
             start_attempts = 0
             while self.persistent_chips[start_player_id] <= 0:
                 start_player_id = (start_player_id + 1) % self.num_players
                 start_attempts += 1
                 if start_attempts > self.num_players:
+                    # 极端情况下所有玩家都淘汰时，回退到 0
                     start_player_id = 0
                     break
             await self._run_auction_phase()
@@ -2065,6 +2239,40 @@ class GameController:
 
         return max(0.05, min(0.95, probability))
 
+    def _calculate_bribe_details(self, player_id: int, ps: PlayerState) -> tuple[bool, int, float]:
+        """(新) 计算贿赂成本和成功率"""
+        player_obj = self.players[player_id]
+
+        # 1. 成本：当前筹码的 70%，最低 400
+        bribe_cost = max(400, int(ps.chips * 0.7))
+
+        # 2. 成功率：基础 60%
+        base_chance = 0.60
+
+        # 3. 惩罚/奖励
+        # 全局警戒值越高，贿赂越难 (最高 -30%)
+        alert_penalty = (self.global_alert_level / 100.0) * 0.30
+        # 经验越高，贿赂越容易 (最高 +20%)
+        experience_bonus = (player_obj.experience / 100.0) * 0.20
+
+        # [用户需求]: 筹码越低，贿赂越容易 (绝境加成)
+        desperation_bonus = 0.0
+        if ps.chips < 300:
+            # 筹码为 300 时 bonus=0, 筹码为 0 时 bonus=0.25 (即最高提升 25% 成功率)
+            desperation_bonus = ((300 - max(ps.chips, 0)) / 300.0) * 0.25
+
+        # 4. 最终概率
+        final_chance = base_chance - alert_penalty + experience_bonus + desperation_bonus
+        # (提高下限和上限，以匹配绝境加成)
+        final_chance = max(0.15, min(0.95, final_chance))  # 限制在 15% ~ 95%
+
+        # 5. 可负担性
+        # [IOU 修复] 玩家不再需要立即支付，但他们必须拥有 "有价值的" 筹码量（至少 100）
+        # 才能让荷官认为这笔 "欠款" 有意义。
+        can_afford = ps.chips >= 100
+
+        return can_afford, bribe_cost, final_chance
+
     async def _handle_cheat_move(self, game: ZhajinhuaGame, player_id: int, cheat_move: Optional[dict]) -> Dict[
         str, object]:
         """(新) 处理换花色/点数作弊。"""
@@ -2074,6 +2282,18 @@ class GameController:
 
         player_obj = self.players[player_id]
         player_name = player_obj.name
+
+        # (↓ 新增的检查 ↓)
+        ps = game.state.players[player_id]
+        if not ps.looked:
+            await self.god_print(f"【安保锁定】: {player_name} 试图在未看牌的情况下作弊（盲换），作弊被自动阻止。")
+            log_payload = {"success": False, "error": "严禁盲换 (未看牌)", "raw": cheat_move}
+            self.cheat_action_log.append((self.hand_count, player_id, cheat_move.get("type", "UNKNOWN"), log_payload))
+            player_obj.update_experience_from_cheat(False, cheat_move.get("type", "UNKNOWN"), log_payload)
+            result["attempted"] = True
+            result["type"] = cheat_move.get("type", "UNKNOWN")
+            return result
+        # (↑ 新增检查结束 ↑)
 
         # --- [修复 5.4]：全局警戒值 100 检查 ---
         if self.global_alert_level >= 100.0 and player_obj.experience < 100.0:
@@ -2197,14 +2417,158 @@ class GameController:
                 0.5
             )
 
-            # --- [修复 5.5]：增加全局警戒值 ---
-            old_alert = self.global_alert_level
-            self.global_alert_level = min(100.0, self.global_alert_level + self.CHEAT_ALERT_INCREASE)
-            await self.god_print(
-                f"【安保提示】: 全局警戒值上升！ {old_alert:.1f} -> {self.global_alert_level:.1f}", 0.5
-            )
-            # --- [修复 5.5 结束] ---
+            # [D20 修复] 贿赂逻辑 *必须* 移到 警戒值增加 之前
 
+            ps = game.state.players[player_id]
+            penalty_chips_at_stake = ps.chips  # 记录被抓获时的筹码
+
+            # --- [新功能：混合贿赂系统 (D20版)] ---
+            # (新) 修正了变量解包顺序
+            can_afford_bribe, bribe_cost, success_chance = self._calculate_bribe_details(player_id, ps)
+
+            # (新) 修复了旧代码中不存在的 payment_type 变量
+            # (根据 _calculate_bribe_details 逻辑，IOU 总是为 True，我们只检查 can_afford)
+            payment_type = "IOU" if can_afford_bribe else "UPFRONT"  # (或者您需要的任何逻辑)
+
+            bribe_successful = False
+            bribe_attempted = False
+            is_critical_success = False  # [D20 修复] D20大成功标志
+
+
+            if ps.chips < 100:
+                await self.god_print(f"【上帝(贿赂失败)】: {player_name} 筹码不足 100，荷官拒绝提供贿赂选项。", 0.5)
+            else:
+                await self.god_print(f"【上帝(密谈)】: 荷官将 {player_name} 拉到一边... 提供了贿赂选项。")
+                bribe_template = self.prompt_templates.get("bribe", "")
+
+                if not bribe_template:
+                    await self.god_print(f"【上帝(系统错误)】: 贿赂模板未加载，自动跳过。", 0.5)
+                else:
+                    # [混合系统] 根据支付类型生成动态提示
+                    if payment_type == "UPFRONT":
+                        payment_method_string = f"“如果你现在**立即支付 {bribe_cost} 筹码** 作为‘封口费’，我可以当作什么都没看见。”"
+                        consequence_string = (
+                            "**如果贿赂成功 (常规检定)**：\n"
+                            f"    * 你**立即支付** {bribe_cost} 筹码。\n"
+                            "    * 你*不会*被淘汰，可以（用剩余筹码）继续游戏。"
+                        )
+                    else:  # payment_type == "IOU"
+                        payment_method_string = f"“你现在付不起... 这样吧，你**同意签署一份 {bribe_cost} 筹码的‘贿赂欠款’ (IOU)**。如果你同意并贿赂成功，你将背负这笔债务继续游戏。”"
+                        consequence_string = (
+                            "**如果贿赂成功 (常规检定)**：\n"
+                            "    * 你**不会**被立即淘汰，你的主要动作 (如 ALL_IN) 将正常执行。\n"
+                            f"    * 你将背负 **{bribe_cost} 筹码的欠款**。\n"
+                            "    * **【!! 债务结算 !!】**：在本手牌结束时，如果你赢得了底池，系统将**自动从你的奖金中扣除**这 {bribe_cost} 筹码。"
+                        )
+
+                    bribe_decision_json = await player_obj.decide_bribe(
+                        bribe_template,
+                        bribe_cost,
+                        success_chance,
+                        penalty_chips_at_stake,
+                        payment_method_string,  # <-- [新]
+                        consequence_string,  # <-- [新]
+                        self.god_stream_start,
+                        self.god_stream_chunk
+                    )
+
+                    wants_to_bribe = bribe_decision_json.get("bribe", False)
+
+                    if not wants_to_bribe:
+                        await self.god_print(f"【上帝(贿赂失败)】: {player_name} 拒绝了荷官的提议。", 0.5)
+                    else:
+                        # [D20 修复] 玩家同意贿赂，开始掷骰
+                        bribe_attempted = True
+                        d20_roll = random.randint(1, 20)
+                        await self.god_print(f"【上帝(命运)】: {player_name} 试图说服荷官... D20 掷骰结果: {d20_roll}",
+                                             0.5)
+                        await asyncio.sleep(1)
+
+                        if d20_roll == 1:
+                            # --- (Nat 1: 大失败) ---
+                            bribe_successful = False
+                            await self.god_print(
+                                f"【上帝(大失败)】: {player_name} (掷骰 1)... 荷官勃然大怒：“你在侮辱我吗？！滚出去！”", 0.5)
+                            # 检查是否需要支付（UPFRONT 模式下，钱还是被抢了）
+                            if payment_type == "UPFRONT":
+                                ps.chips -= bribe_cost
+                                self.persistent_chips[player_id] -= bribe_cost
+                                await self.god_print(f"【上帝(惩罚)】: 荷官没收了 {bribe_cost} 筹码（贿赂金不退）。", 0.5)
+
+                        elif d20_roll == 20:
+                            # --- (Nat 20: 大成功) ---
+                            bribe_successful = True
+                            is_critical_success = True  # 设置标志
+                            await self.god_print(
+                                f"【上帝(大成功)】: {player_name} (掷骰 20)... 荷官拍了拍他的肩膀：“都是哥们，钱不要了。我就当没看见。”",
+                                0.5)
+                            # (不扣钱, 不施加债务)
+
+                            # (大成功也需要泄露，但措辞不同)
+                            leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 作弊被抓，但他们和荷官聊了几句，荷官大笑着放过了他们，连钱都没要！"
+                            await self._leak_information(
+                                game, leak_msg, self.LEAK_BRIBE_MOVE_BASE, player_id, player_id
+                            )
+
+                        else:
+                            # --- (常规检定 2-19) ---
+                            await self.god_print(
+                                f"【上帝(常规检定)】: (掷骰 {d20_roll}) ...荷官正在权衡利弊 (检定成功率: {success_chance:.0%})",
+                                0.5)
+                            await asyncio.sleep(1)
+
+                            if random.random() < success_chance:
+                                # (常规成功)
+                                bribe_successful = True
+                                if payment_type == "UPFRONT":
+                                    ps.chips -= bribe_cost
+                                    self.persistent_chips[player_id] -= bribe_cost
+                                    await self.god_print(f"【上帝(贿赂成功)】: 荷官收下了钱 ({bribe_cost})，假装无事发生。",
+                                                         0.5)
+                                else:  # IOU
+                                    self.active_effects.append({
+                                        "effect_id": "bribe_debt",
+                                        "effect_name": "贿赂欠款",
+                                        "source_id": player_id,
+                                        "target_id": player_id,
+                                        "turns_left": 1,
+                                        "hand_id": self.hand_count,
+                                        "category": "debt",
+                                        "amount": bribe_cost
+                                    })
+                                    await self.god_print(
+                                        f"【上帝(贿赂成功)】: 荷官接受了欠款协议。{player_name} 负债 {bribe_cost} 继续游戏。",
+                                        0.5)
+
+                                # (常规成功泄露)
+                                leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 作弊被抓，但他们似乎私下与荷官达成了某种交易（贿赂？），荷官随后放过了他们。"
+                                await self._leak_information(
+                                    game, leak_msg, self.LEAK_BRIBE_MOVE_BASE, player_id, player_id
+                                )
+
+                            else:
+                                # (常规失败)
+                                bribe_successful = False
+                                if payment_type == "UPFRONT":
+                                    ps.chips -= bribe_cost
+                                    self.persistent_chips[player_id] -= bribe_cost
+                                    await self.god_print(
+                                        f"【上帝(贿赂失败)】: 荷官拒绝了贿赂... (贿赂金 {bribe_cost} 不退)", 0.5)
+                                else:
+                                    await self.god_print(f"【上帝(贿赂失败)】: 荷官拒绝了欠款协议！“你没有资格！”", 0.5)
+
+            # --- [D20 修复] 警戒值增加 (移到贿赂逻辑之后) ---
+            if not is_critical_success:
+                old_alert = self.global_alert_level
+                self.global_alert_level = min(100.0, self.global_alert_level + self.CHEAT_ALERT_INCREASE)
+                await self.god_print(
+                    f"【安保提示】: 全局警戒值上升！ {old_alert:.1f} -> {self.global_alert_level:.1f}", 0.5
+                )
+            else:
+                await self.god_print(f"【安保提示】: (大成功) {player_name} 的贿赂未引起警戒值上升。", 0.5)
+            # --- [修复结束] ---
+
+            # 准备日志
             log_payload = {
                 "success": False,
                 "detected": True,
@@ -2218,24 +2582,34 @@ class GameController:
                     }
                     for m in modifications
                 ],
-                "probability": round(detection_probability, 3)
+                "probability": round(detection_probability, 3),
+                "bribe_attempted": bribe_attempted,
+                "bribe_success": bribe_successful,
+                "bribe_cost": bribe_cost if bribe_attempted else 0
             }
             result["detected"] = True
 
-            # --- [修复 1.1]：执行淘汰惩罚 ---
-            ps = game.state.players[player_id]
-            penalty_pool = ps.chips
-            ps.chips = 0
-            ps.alive = False  # 淘汰玩家
-            game.state.pot += penalty_pool
-            self.players[player_id].alive = False  # 从控制器中淘汰
-            self.persistent_chips[player_id] = 0
-            result["penalty_elimination"] = True  # (新) 设置标志位
-            await self.god_print(f"【作弊惩罚】: {player_name} 被当场抓获，筹码清零并淘汰出局！", 0.5)
-            # --- [修复 1.1 结束] ---
+            if not bribe_successful:
+                # --- [原 修复 1.1]：执行淘汰惩罚 (仅当贿赂失败或未尝试时) ---
+                # ps 已经在上面获取了
+                penalty_pool = ps.chips  # 这是剩余的筹码
+                ps.chips = 0
+                ps.alive = False  # 淘汰玩家
+                game.state.pot += penalty_pool
+                # self.players[player_id].alive = False # <-- [BUG 修复]: 此行被移除。
+                self.persistent_chips[player_id] = 0  # 永久筹码清零
+                result["penalty_elimination"] = True  # (新) 设置标志位
+                await self.god_print(f"【作弊惩罚】: {player_name} 被当场抓获，筹码清零并淘汰出局！", 0.5)
+                # --- [惩罚结束] ---
+            else:
+                # 贿赂成功，玩家幸存
+                result["bribe_successful"] = True
+                result["penalty_elimination"] = False
+                # 刷新看板以显示减少的筹码
+                await self.god_panel_update(self._build_panel_data(game, -1))
 
             self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
-            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)  # 注意：作弊本身是 "False" (失败)
             return result
 
         for m in modifications:
@@ -2375,12 +2749,14 @@ class GameController:
         await self.god_print(f"--- 审判阶段 2: 被告辩护 ---", 1)
 
         defense_speech_1 = await self.players[target_id_1].defend(
+            self.prompt_templates.get("defend", ""),  # <-- [修复] 传入模板
             accuser_name, target_name_2, evidence_log_str,
             self.god_stream_start, self.god_stream_chunk
         )
         await asyncio.sleep(1)
 
         defense_speech_2 = await self.players[target_id_2].defend(
+            self.prompt_templates.get("defend", ""),  # <-- [修复] 传入模板
             accuser_name, target_name_1, evidence_log_str,
             self.god_stream_start, self.god_stream_chunk
         )
@@ -2392,6 +2768,7 @@ class GameController:
         for jury_id in jury_list:
             vote_tasks.append(
                 self.players[jury_id].vote(
+                    self.prompt_templates.get("vote", ""),  # <-- [修复] 传入模板
                     accuser_name, target_name_1, target_name_2,
                     evidence_log_str, defense_speech_1, defense_speech_2,
                     self.god_stream_start, self.god_stream_chunk
@@ -2587,6 +2964,7 @@ class GameController:
                     call_cost,
                     table_seating_str,
                     opponent_reference_str,
+                    self.prompt_templates.get("decide_action", ""),  # <-- [修复] 传入模板
                     stream_start_cb=self.god_stream_start,
                     stream_chunk_cb=self.god_stream_chunk
                 )
@@ -2628,6 +3006,7 @@ class GameController:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
 
             item_to_use = action_json.get("use_item")
+            re_decide = False  # <-- 📌 新增：定义 re_decide 标志
             if item_to_use:
                 item_result = await self._handle_item_effect(game, current_player_idx, item_to_use)
                 if item_result:
@@ -2638,6 +3017,9 @@ class GameController:
                         break
                     if item_result.get("skip_action"):
                         continue
+                        # <-- 📌 新增：如果触发了重新决策，则设置标志
+                    if item_result.get("re_decide_action"):
+                        re_decide = True
 
             await self._flush_queued_messages()
 
@@ -2653,6 +3035,11 @@ class GameController:
             fresh_raw_actions = game.available_actions(current_player_idx, player_debuffs or set())
             fresh_actions_list = [(act_type.name, display_cost) for act_type, display_cost in fresh_raw_actions]
             # --- [修复 22.1 结束] ---
+
+            if re_decide:
+                # 不执行动作，不调用 game.step()，不调用 _handle_next_turn()
+                await self.god_print(f"【系统提示】: {current_player_obj.name} 使用了手牌调整道具，请重新决策动作...", 0.5)
+                continue  # 跳到下一个循环，再次询问当前玩家
 
             # (新) 使用“新鲜”的列表进行解析
             action_obj, error_msg = self._parse_action_json(game, action_json, current_player_idx, fresh_actions_list)
@@ -2739,7 +3126,11 @@ class GameController:
         for text, delay in self._apply_post_hand_effects(game, winner_id, final_pot_size):
             await self.god_print(text, delay)
 
-        await self.god_print(f"--- 本手结束 ---", 1)
+        # --- [IOU 修复] 结算贿赂欠款 ---
+        # (必须在 _apply_post_hand_effects 之后，在最终淘汰检查之前)
+        for text, delay in await self._settle_bribe_debts(game):
+            await self.god_print(text, delay)
+        # --- [修复结束] ---
         winner_name = "N/A"
         if winner_id is not None:
             winner_name = self.players[winner_id].name
@@ -2770,7 +3161,7 @@ class GameController:
                         except ValueError:
                             pass
 
-                        revive_chips = 100
+                        revive_chips = 300
                         new_chips = revive_chips  # (新) 将新筹码设为复活筹码
                         p.alive = True  # 保持控制器存活
 
@@ -2814,7 +3205,42 @@ class GameController:
 
         await self.god_print(f"--- LLM 人设发言开始 (同时私下更新笔记) ---", 1)
         final_state_data = game.export_state(view_player=None)
-        round_history_json = json.dumps(final_state_data['history'], indent=2, ensure_ascii=False)
+
+        # --- [AI 脆弱性修复] ---
+        # 预处理历史记录，将 玩家ID 和 目标ID 替换为 玩家名字
+        # 极大降低 LLM 在 reflect 阶段解析历史的认知负担
+        processed_history = []
+        raw_history_list = final_state_data.get('history', [])
+
+        for action_dict in raw_history_list:
+            processed_action = action_dict.copy()
+
+            # 替换 'player' ID
+            if 'player' in processed_action:
+                player_id = processed_action['player']
+                if 0 <= player_id < len(self.players):
+                    # 使用玩家名字
+                    processed_action['player_name'] = self.players[player_id].name
+                else:
+                    processed_action['player_name'] = f"未知 (ID:{player_id})"
+                del processed_action['player']  # 移除旧的 ID 键
+
+            # 替换 'target' ID (用于 COMPARE, ACCUSE 等)
+            if 'target' in processed_action and processed_action['target'] is not None:
+                target_id = processed_action['target']
+                if 0 <= target_id < len(self.players):
+                    # 使用目标名字
+                    processed_action['target_name'] = self.players[target_id].name
+                else:
+                    processed_action['target_name'] = f"未知 (ID:{target_id})"
+                del processed_action['target']  # 移除旧的 ID 键
+
+            processed_history.append(processed_action)
+
+        # 使用处理后的人类可读历史
+        round_history_json = json.dumps(processed_history, indent=2, ensure_ascii=False)
+        # --- [修复结束] ---
+
         round_result_str = f"赢家是 {winner_name}"
 
         new_impressions_map = {}
@@ -2823,25 +3249,31 @@ class GameController:
             if self.persistent_chips[i] > 0 and self.players[i].alive:
 
                 current_player_impressions = self.player_private_impressions.get(i, {})
+
+                # --- [策略优化]：只将存活对手的笔记信息传回 AI ---
                 opponent_impressions_data = {}
                 for opponent_id, impression_text in current_player_impressions.items():
-                    if opponent_id != i:
+                    # 检查：1. 不是自己； 2. 对手必须存活
+                    if opponent_id != i and self.players[opponent_id].alive:
                         opponent_name = self.players[opponent_id].name
                         opponent_impressions_data[opponent_name] = impression_text
 
                 current_impressions_json_str = json.dumps(opponent_impressions_data, indent=2, ensure_ascii=False)
+                # --- [优化结束] ---
 
-                # --- [修复 13.1] 构建玩家 ID-名字索引 ---
+                # --- [修复 13.1] 构建玩家 ID-名字索引 (只包含存活对手) ---
                 player_self_details_str = f"  - {player.name} (Player {i})"
                 opponent_name_list_lines = []
                 for opp_id, opp_player in enumerate(self.players):
-                    if opp_id == i:
+                    # 检查：1. 不是自己； 2. 对手必须存活
+                    if opp_id == i or not opp_player.alive:
                         continue
                     opponent_name_list_lines.append(f"  - {opp_player.name} (Player {opp_id})")
                 opponent_name_list_str = "\n".join(opponent_name_list_lines)
                 # --- [修复 13.1 结束] ---
 
                 (reflection_text, private_impressions_dict) = await player.reflect(
+                    self.prompt_templates.get("reflect", ""),  # <-- [修复] 传入模板
                     round_history_json,
                     round_result_str,
                     current_impressions_json_str,

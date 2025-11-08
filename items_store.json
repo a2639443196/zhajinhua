@@ -30,9 +30,9 @@
   "ITM_005": {
     "name": "免死金牌",
     "type": "functional",
-    "cost_estimate": 2400,
-    "description": "【被动】当你在手牌结束时或因贷款/指控被淘汰时，此道具自动消耗，使你以 100 筹码复活。",
-    "auction_weight": 3
+    "cost_estimate": 2800,
+    "description": "【被动】当你在手牌结束时因任何原因（作弊、贷款、指控、输光）被淘汰时，此道具自动消耗，使你以 300 筹码复活。",
+    "auction_weight": 2
   },
   "ITM_006": {
     "name": "偷看卡",

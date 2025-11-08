@@ -35,7 +35,7 @@
         }
 
         .page {
-            width: min(1180px, 100%);
+            width: min(1400px, 100%);
             display: flex;
             flex-direction: column;
             gap: 28px;
@@ -195,7 +195,8 @@
 
         .panel-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            /* 缩小最小卡片宽度到 160px，以适应更多 AI */
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 18px;
         }
 
@@ -456,6 +457,28 @@
             background: rgba(0, 229, 255, 0.05);
         }
 
+        .player-card.is-current-turn {
+            /* 显著的边框颜色 */
+            border-color: var(--accent-strong);
+            /* 增加边框宽度 */
+            border-width: 2px;
+            /* 呼吸效果或高亮阴影 */
+            box-shadow: 0 0 10px rgba(0, 229, 255, 0.7);
+            /* 添加动画，让高亮更明显 */
+            animation: pulse-border 1.5s infinite alternate;
+        }
+
+        @keyframes pulse-border {
+            from {
+                border-color: var(--accent);
+                box-shadow: 0 0 5px rgba(0, 229, 255, 0.4);
+            }
+            to {
+                border-color: var(--accent-strong);
+                box-shadow: 0 0 15px rgba(0, 229, 255, 0.8);
+            }
+        }
+
         @media (max-width: 820px) {
             body {
                 padding: 24px 16px 36px;
@@ -466,7 +489,8 @@
             }
 
             .panel-grid {
-                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                /* 在移动端/小屏幕上也允许更紧凑的显示 */
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             }
 
             .log-body {
@@ -513,6 +537,7 @@
                 <button id="start-button" class="control-button" disabled>连接中...</button>
                 <button id="stop-button" class="control-button stop" disabled>停止游戏</button>
                 <button id="clear-button" class="control-button clear" disabled>清空日志</button>
+                <button id="export-button" class="control-button clear" disabled>导出日志</button>
             </div>
         </section>
 
@@ -562,6 +587,7 @@
     const startButton = document.getElementById("start-button");
     const stopButton = document.getElementById("stop-button");
     const clearButton = document.getElementById("clear-button");
+    const exportButton = document.getElementById("export-button"); // <-- 新增
     let ws = null;
     let lastLogElement = null;
     let logCount = 0;
@@ -626,16 +652,19 @@
             startButton.disabled = true;
             stopButton.disabled = true;
             clearButton.disabled = true;
+            exportButton.disabled = true; // <-- 新增
             startButton.textContent = "连接中...";
         } else if (isRunning) {
             startButton.disabled = true;
             stopButton.disabled = false;
             clearButton.disabled = true;
+            exportButton.disabled = true; // <-- 新增
             startButton.textContent = "游戏运行中...";
         } else {
             startButton.disabled = false;
             stopButton.disabled = true;
             clearButton.disabled = false;
+            exportButton.disabled = false; // <-- (修改) 游戏停止时，启用导出
             startButton.textContent = "开始游戏";
         }
     }
@@ -658,6 +687,12 @@
         logContainer.innerHTML = "";
         logCount = 0;
         updateLogCount();
+    };
+
+    // (↓↓ 新增这个处理器 ↓↓)
+    exportButton.onclick = () => {
+        // 触发浏览器下载
+        window.open("/download_latest_log", "_blank");
     };
 
     function updateLogCount() {
@@ -688,6 +723,8 @@
         playersDiv.innerHTML = "";
 
         const players = data.players || [];
+        // 📌 新增：获取当前回合玩家 ID
+        const currentPlayerId = data.current_player;
 
         players.forEach(player => {
             const card = document.createElement("div");
@@ -701,6 +738,12 @@
             if (player.is_active) {
                 card.classList.add("active");
             }
+
+            // 📌 新增：如果玩家 ID 匹配当前回合 ID，则添加高亮类
+            if (player.id === currentPlayerId) {
+                card.classList.add("is-current-turn");
+            }
+
 
             const nameRow = document.createElement("div");
             nameRow.className = "player-name";

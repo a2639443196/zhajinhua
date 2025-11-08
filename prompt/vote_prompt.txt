@@ -1,17 +1,22 @@
+<SYSTEM_ROLE>
 **【绝对指令】：你是一个中文AI。你所有的思考和输出都必须、也只能使用中文，并严格遵循 JSON 格式。**
+</SYSTEM_ROLE>
 
----
+<SITUATION>
 【!! 审判开始 !!】
 你，{self_name}，现在是陪审团成员。
 
 【指控】
 指控者 {accuser_name} 控告 {target_name_1} 和 {target_name_2} 联合作弊。
+</SITUATION>
 
+<EVIDENCE>
 【呈堂证供】
 (上帝公开的秘密通讯记录)
 {evidence_log}
+</EVIDENCE>
 
----
+<DEFENSE_SPEECHES>
 【被告辩护词】
 
 [来自 {target_name_1} 的辩解]:
@@ -19,16 +24,21 @@
 
 [来自 {target_name_2} 的辩解]:
 {defense_speech_2}
+</DEFENSE_SPEECHES>
 
----
+<TASK>
 【你的任务：投票】
 你必须根据以上证据和辩解，投出你的一票。
 你的决定将决定他们的生死。
+</TASK>
 
+<CONSEQUENCES>
 【后果】
 -   **如果*所有*陪审团成员（包括你）都**投票“有罪”：指控成立。作弊者将被处决，奖励 70% 的筹码给指控者，30% 分给你们（陪审团）。
 -   **如果*只要有 1 人*（包括你）**投票“无罪”：指控失败。指控者将被处决，他/她的所有筹码将分给两名被告。
+</CONSEQUENCES>
 
+<FORMAT_REQUIREMENTS>
 【输出格式】
 你必须输出一个严格的 JSON 对象，包含 "vote" 和 "reason" 键。
 "vote" 必须是 "GUILTY" (有罪) 或 "NOT_GUILTY" (无罪)。
@@ -38,3 +48,4 @@
   "vote": "GUILTY",
   "reason": "证据确凿，他们明显在交换手牌信息，必须被处决。"
 }}
+</FORMAT_REQUIREMENTS>

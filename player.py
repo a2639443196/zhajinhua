@@ -3,7 +3,7 @@ import re
 import time
 import asyncio
 import ast
-from typing import List, Dict, Callable, Awaitable, Optional
+from typing import List, Dict, Callable, Awaitable, Optional, Tuple
 from llm_client import LLMClient
 import pathlib
 import traceback  # (新) 导入 traceback
@@ -277,14 +277,6 @@ class Player:
             gain += min(len(private_notes) * 0.6, 3.0)
         self.experience = max(0.0, self.experience + gain)
 
-    def _read_file(self, filepath: str) -> str:
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read().strip()
-        except Exception as e:
-            print(f"【上帝(系统)】: 读取文件 {filepath} 失败: {str(e)}")
-            return ""
-
     def _extract_json_candidates(self, text: str) -> List[str]:
         """从给定文本中提取所有可能的 JSON 片段。"""
         candidates: List[str] = []
@@ -338,43 +330,55 @@ class Player:
         return None
 
     def _parse_first_valid_json(self, text: str) -> Optional[Dict]:
+        # [健壮性修复]：改为返回 *最后* 一个有效的 JSON，以允许 LLM 进行自我修正。
+        last_valid_json: Optional[Dict] = None
         for candidate in self._extract_json_candidates(text):
             parsed = self._safe_parse_json(candidate)
             if isinstance(parsed, dict):
-                return parsed
-        return None
+                last_valid_json = parsed  # 持续覆盖，直到最后一个
 
-    # (已修改)
+        return last_valid_json  # 返回最后一个找到的 JSON
+
+        # (已修改)
+
     async def create_persona(self,
-                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
+                             persona_prompt_template: str,
+                             used_aliases: List[str],
+                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> Tuple[str, str | None]:
         """
         (已修改)
-        1. 只接收 stream_chunk_cb。
-        2. Controller 负责 stream_start 和 换行。
-        3. 在出错时 *返回* 错误信息。
+        接收已使用的代号列表，直接返回完整的 intro_text，并使用 self.name 作为默认 alias。
         """
-        template = self._read_file(CREATE_PERSONA_PROMPT_PATH)
+        template = persona_prompt_template
         if not template:
-            return f"(错误: 无法读取人设 Prompt)"
+            return f"(错误: 无法读取人设 Prompt)", None
 
-        prompt = template.format(self_name=self.name)
+        used_aliases_str = "\n".join(used_aliases) if used_aliases else "无"
+
+        # 📌 [修复] 传递已使用的完整人设文本，让 AI 自己去理解和解析避免重复
+        prompt = template.format(self_name=self.name, used_aliases_str=used_aliases_str)
         messages = [{"role": "user", "content": prompt}]
 
         try:
             full_intro = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=stream_chunk_cb  # 只传递 chunk
+                stream_callback=stream_chunk_cb
             )
 
             intro_text = full_intro.strip().replace("\n", " ")
             if not intro_text:
-                return f"大家好，我是 {self.name}，很高兴认识各位。"
-            return intro_text
+                return f"大家好，我是 {self.name}，很高兴认识各位。", None
+
+            # 📌 [简化逻辑] 直接使用玩家名作为 Alias。让 AI 自己去理解避免重复。
+            # AI 的任务现在是：确保它输出的 "代号/姓名" 在 used_aliases_str 中没有出现。
+            alias = self.name
+
+            return intro_text, alias
 
         except Exception as e:
             error_msg = f"(创建人设时出错: {str(e)})"
-            return error_msg
+            return error_msg, None
 
     # (已修改)
     async def decide_action(self,
@@ -397,6 +401,7 @@ class Player:
                             call_cost: int,
                             table_seating_str: str,
                             opponent_reference_str: str,
+                            decide_action_template: str,  # <-- [修复] 添加模板参数
                             stream_start_cb: Callable[[str], Awaitable[None]],
                             stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
         """
@@ -405,7 +410,8 @@ class Player:
         """
         full_content_debug = ""  # (新) 用于在出错时记录
         try:
-            template = self._read_file(DECIDE_ACTION_PROMPT_PATH)
+            # template = self._read_file(DECIDE_ACTION_PROMPT_PATH) # <-- [修复] 移除
+            template = decide_action_template  # <-- [修复] 使用传入的模板
             if not template:
                 raise RuntimeError("无法读取 Prompt 模板文件。")
 
@@ -480,7 +486,8 @@ class Player:
             print(f"【上帝(警告)】: {self.name} 解析流式JSON失败: {error_msg_oneline}")
             await stream_chunk_cb(f"\n[LLM 解析失败: {error_msg_oneline}]")
 
-            return {"action": "FOLD", "reason": error_msg_oneline, "target_name": None, "mood": "解析失败", "speech": None,
+            return {"action": "FOLD", "reason": error_msg_oneline, "target_name": None, "mood": "解析失败",
+                    "speech": None,
                     "secret_message": None}
             # --- 修复结束 ---
 
@@ -499,7 +506,6 @@ class Player:
             "CALL": ["CALL", "跟注", "跟上", "跟到底"],
             "FOLD": ["FOLD", "弃牌", "放弃", "扔牌"],
             "LOOK": ["LOOK", "看牌", "先看牌"],
-            "CHECK": ["CHECK", "过牌", "过一下"],
         }
 
         lowered = normalized.lower()
@@ -626,13 +632,15 @@ class Player:
 
     # (已修改)
     async def defend(self,
+                     defend_prompt_template: str,  # <-- [修复] 添加模板参数
                      accuser_name: str,
                      partner_name: str,
                      evidence_log: str,
                      stream_start_cb: Callable[[str], Awaitable[None]],
                      stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
 
-        template = self._read_file(DEFEND_PROMPT_PATH)
+        # template = self._read_file(DEFEND_PROMPT_PATH) # <-- [修复] 移除
+        template = defend_prompt_template  # <-- [修复] 使用传入的模板
         if not template:
             return "我无话可说。"
 
@@ -659,6 +667,7 @@ class Player:
 
     # (已修改)
     async def vote(self,
+                   vote_prompt_template: str,  # <-- [修复] 添加模板参数
                    accuser_name: str,
                    target_name_1: str,
                    target_name_2: str,
@@ -668,7 +677,8 @@ class Player:
                    stream_start_cb: Callable[[str], Awaitable[None]],
                    stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
 
-        template = self._read_file(VOTE_PROMPT_PATH)
+        # template = self._read_file(VOTE_PROMPT_PATH) # <-- [修复] 移除
+        template = vote_prompt_template  # <-- [修复] 使用传入的模板
         if not template:
             return "NOT_GUILTY"
 
@@ -708,8 +718,57 @@ class Player:
             await stream_chunk_cb(f"\n投票时出错: {str(e)} (自动投: 无罪)\n")
             return "NOT_GUILTY"
 
+    async def decide_bribe(self,
+                           bribe_prompt_template: str,
+                           bribe_cost: int,
+                           success_chance: float,
+                           penalty_chips: int,
+                           # ↓↓ 在这里添加两个新参数 ↓↓
+                           payment_method_string: str,
+                           consequence_string: str,
+                           # ↑↑ 添加完毕 ↑↑
+                           stream_start_cb: Callable[[str], Awaitable[None]],
+                           stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
+        """(新) 玩家决定是否贿赂"""
+        if not bribe_prompt_template:
+            return {"bribe": False, "reason": "系统错误：贿赂模板未加载"}
+
+        prompt = bribe_prompt_template.format(
+            self_name=self.name,
+            bribe_cost=bribe_cost,
+            success_chance_percent=success_chance * 100.0,
+            penalty_chips=penalty_chips,
+            success_chance=success_chance,  # (为防万一，也传入原始小数)
+            # ↓↓ 在这里添加两个新参数 ↓↓
+            payment_method_string=payment_method_string,
+            consequence_string=consequence_string
+            # ↑↑ 添加完毕 ↑↑
+        )
+        messages = [{"role": "user", "content": prompt}]
+
+        await stream_start_cb(f"【上帝(密谈)】: [{self.name} 正在紧急决策...]: ")
+        try:
+            full_content = await self.llm_client.chat_stream(
+                messages,
+                model=self.model_name,
+                stream_callback=stream_chunk_cb
+            )
+            await stream_chunk_cb("\n")
+
+            result = self._parse_first_valid_json(full_content)
+            if result and "bribe" in result:
+                return result
+
+            # 如果 JSON 解析失败，默认拒绝贿赂
+            return {"bribe": False, "reason": "JSON 解析失败或未提供 bribe 键"}
+
+        except Exception as e:
+            await stream_chunk_cb(f"\n决策贿赂时出错: {str(e)}\n")
+            return {"bribe": False, "reason": f"决策时发生异常: {str(e)}"}
+
     # (已修改)
     async def reflect(self,
+                      reflect_prompt_template: str,  # <-- [修复] 添加模板参数
                       round_history: str,
                       round_result: str,
                       current_impressions_json: str,
@@ -724,7 +783,8 @@ class Player:
         """
         full_content_debug = ""  # (新)
         try:
-            template = self._read_file(REFLECT_PROMPT_PATH)
+            # template = self._read_file(REFLECT_PROMPT_PATH) # <-- [修复] 移除
+            template = reflect_prompt_template  # <-- [修复] 使用传入的模板
             if not template:
                 raise RuntimeError("无法读取复盘 Prompt")
 
