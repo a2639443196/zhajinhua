@@ -212,7 +212,7 @@ game_loop_task: asyncio.Task | None = None
 
 
 # --- 3. 游戏循环 (已修改以支持日志记录) ---
-async def run_llm_game_loop():
+async def run_llm_game_loop(game_variant: str = "zhajinhua"):
     global game_loop_task
 
     # (新) 创建日志收集器实例
@@ -253,7 +253,8 @@ async def run_llm_game_loop():
         god_print_callback=god_print_and_broadcast,
         god_stream_start_callback=god_stream_start,
         god_stream_chunk_callback=god_stream_chunk,
-        god_panel_update_callback=god_panel_update
+        god_panel_update_callback=god_panel_update,
+        game_variant=game_variant
     )
 
     try:
@@ -289,6 +290,11 @@ async def get_mobile():
     return FileResponse("mobile.html")
 
 
+@app.get("/texas")
+async def get_texas():
+    return FileResponse("texas.html")
+
+
 # --- (新) 日志下载 API 端口 ---
 @app.get("/download_latest_log")
 async def download_latest_log():
@@ -319,9 +325,10 @@ async def websocket_endpoint(ws: WebSocket):
 
             if data.get("type") == "START_GAME":
                 if game_loop_task is None or game_loop_task.done():
-                    await manager.broadcast_log("上帝点击了【开始游戏】...")
+                    variant = data.get("variant", "zhajinhua")
+                    await manager.broadcast_log(f"上帝点击了【开始游戏】... (模式: {variant})")
                     await manager.broadcast_status(running=True)
-                    game_loop_task = asyncio.create_task(run_llm_game_loop())
+                    game_loop_task = asyncio.create_task(run_llm_game_loop(variant))
                 else:
                     await ws.send_json({"type": "log", "message": "游戏已在运行中。"})
 
