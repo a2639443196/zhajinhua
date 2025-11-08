@@ -148,7 +148,7 @@ class GameController:
         self.global_alert_level: float = 0.0
         self.CHEAT_ALERT_INCREASE = 25.0  # (新) 每次抓获增加 25 点
         self.CHEAT_ALERT_DECAY_PER_HAND = 3.0  # (新) 每手牌降低 3 点
-        self.auction_min_raise_floor = 20  # (新) 拍卖中最小的加注底限 (例如 20)
+        self.auction_min_raise_floor = 100  # (新) 拍卖中最小的加注底限 (例如 20)
         # --- [修复 19.1 (修改版)] 泄密机制 *基础* 概率 ---
         # (最终概率将受经验和警戒值影响)
         self.LEAK_SECRET_MESSAGE_BASE = 0.20  # 密信基础泄露率
@@ -1055,6 +1055,10 @@ class GameController:
             )
             # (新) 将详情添加到上帝日志
             await self.god_print(f"【道具生效】{player.name} 使用换牌卡：【{card_old_str}】 替换为 【{card_new_str}】", 0.5)
+
+            # (↓↓ 新增此行 ↓↓)
+            result_flags["panel_refresh"] = True
+
             result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
@@ -1169,6 +1173,10 @@ class GameController:
             # (新) 获取新手牌详情
             new_hand_str = " ".join(self._format_card(card) for card in player_state.hand)
             await self.god_print(f"【道具生效】{player.name} 使用调牌符，新手牌为：【{new_hand_str}】", 0.5)
+
+            # (↓↓ 新增此行 ↓↓)
+            result_flags["panel_refresh"] = True
+
             result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
@@ -1213,6 +1221,10 @@ class GameController:
                 f"【道具生效】{player.name} (交出 {player_card_str}) 与 {target_name} (交出 {target_card_str}) 交换了手牌。",
                 0.5
             )
+
+            # (↓↓ 新增此行 ↓↓)
+            result_flags["panel_refresh"] = True
+
             result_flags["re_decide_action"] = True  # <-- 📌 新增：强制重新决策
             return result_flags
 
@@ -2410,6 +2422,16 @@ class GameController:
         detection_probability = self._calculate_detection_probability(
             player_obj, cheat_type_raw, len(modifications), ps.chips)
 
+        # (新) 提前构建
+        if cheat_type_raw == "SWAP_SUIT":
+            changes_desc = ", ".join(
+                f"第 {m['card_index_display']} 张 {m['from']}→{m['to']}" for m in modifications
+            )
+        else:
+            changes_desc = ", ".join(
+                f"第 {m['card_index_display']} 张 {m['from']}→{m['to']}" for m in modifications
+            )
+
         detected = random.random() < detection_probability
         if detected:
             await self.god_print(
@@ -2417,23 +2439,17 @@ class GameController:
                 0.5
             )
 
-            # [D20 修复] 贿赂逻辑 *必须* 移到 警戒值增加 之前
-
             ps = game.state.players[player_id]
-            penalty_chips_at_stake = ps.chips  # 记录被抓获时的筹码
+            penalty_chips_at_stake = ps.chips
 
             # --- [新功能：混合贿赂系统 (D20版)] ---
-            # (新) 修正了变量解包顺序
+            # (↓) 修复了 Bug 1 (变量解包)
             can_afford_bribe, bribe_cost, success_chance = self._calculate_bribe_details(player_id, ps)
-
-            # (新) 修复了旧代码中不存在的 payment_type 变量
-            # (根据 _calculate_bribe_details 逻辑，IOU 总是为 True，我们只检查 can_afford)
-            payment_type = "IOU" if can_afford_bribe else "UPFRONT"  # (或者您需要的任何逻辑)
+            payment_type = "IOU" if can_afford_bribe else "UPFRONT"  # (推断 payment_type)
 
             bribe_successful = False
             bribe_attempted = False
-            is_critical_success = False  # [D20 修复] D20大成功标志
-
+            is_critical_success = False
 
             if ps.chips < 100:
                 await self.god_print(f"【上帝(贿赂失败)】: {player_name} 筹码不足 100，荷官拒绝提供贿赂选项。", 0.5)
@@ -2444,7 +2460,6 @@ class GameController:
                 if not bribe_template:
                     await self.god_print(f"【上帝(系统错误)】: 贿赂模板未加载，自动跳过。", 0.5)
                 else:
-                    # [混合系统] 根据支付类型生成动态提示
                     if payment_type == "UPFRONT":
                         payment_method_string = f"“如果你现在**立即支付 {bribe_cost} 筹码** 作为‘封口费’，我可以当作什么都没看见。”"
                         consequence_string = (
@@ -2466,8 +2481,8 @@ class GameController:
                         bribe_cost,
                         success_chance,
                         penalty_chips_at_stake,
-                        payment_method_string,  # <-- [新]
-                        consequence_string,  # <-- [新]
+                        payment_method_string,
+                        consequence_string,
                         self.god_stream_start,
                         self.god_stream_chunk
                     )
@@ -2477,7 +2492,6 @@ class GameController:
                     if not wants_to_bribe:
                         await self.god_print(f"【上帝(贿赂失败)】: {player_name} 拒绝了荷官的提议。", 0.5)
                     else:
-                        # [D20 修复] 玩家同意贿赂，开始掷骰
                         bribe_attempted = True
                         d20_roll = random.randint(1, 20)
                         await self.god_print(f"【上帝(命运)】: {player_name} 试图说服荷官... D20 掷骰结果: {d20_roll}",
@@ -2485,40 +2499,33 @@ class GameController:
                         await asyncio.sleep(1)
 
                         if d20_roll == 1:
-                            # --- (Nat 1: 大失败) ---
                             bribe_successful = False
                             await self.god_print(
                                 f"【上帝(大失败)】: {player_name} (掷骰 1)... 荷官勃然大怒：“你在侮辱我吗？！滚出去！”", 0.5)
-                            # 检查是否需要支付（UPFRONT 模式下，钱还是被抢了）
                             if payment_type == "UPFRONT":
                                 ps.chips -= bribe_cost
                                 self.persistent_chips[player_id] -= bribe_cost
                                 await self.god_print(f"【上帝(惩罚)】: 荷官没收了 {bribe_cost} 筹码（贿赂金不退）。", 0.5)
 
                         elif d20_roll == 20:
-                            # --- (Nat 20: 大成功) ---
                             bribe_successful = True
-                            is_critical_success = True  # 设置标志
+                            is_critical_success = True
                             await self.god_print(
                                 f"【上帝(大成功)】: {player_name} (掷骰 20)... 荷官拍了拍他的肩膀：“都是哥们，钱不要了。我就当没看见。”",
-                                0.5)
-                            # (不扣钱, 不施加债务)
-
-                            # (大成功也需要泄露，但措辞不同)
+                                0.5
+                            )
                             leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 作弊被抓，但他们和荷官聊了几句，荷官大笑着放过了他们，连钱都没要！"
                             await self._leak_information(
                                 game, leak_msg, self.LEAK_BRIBE_MOVE_BASE, player_id, player_id
                             )
 
                         else:
-                            # --- (常规检定 2-19) ---
                             await self.god_print(
                                 f"【上帝(常规检定)】: (掷骰 {d20_roll}) ...荷官正在权衡利弊 (检定成功率: {success_chance:.0%})",
                                 0.5)
                             await asyncio.sleep(1)
 
                             if random.random() < success_chance:
-                                # (常规成功)
                                 bribe_successful = True
                                 if payment_type == "UPFRONT":
                                     ps.chips -= bribe_cost
@@ -2540,14 +2547,12 @@ class GameController:
                                         f"【上帝(贿赂成功)】: 荷官接受了欠款协议。{player_name} 负债 {bribe_cost} 继续游戏。",
                                         0.5)
 
-                                # (常规成功泄露)
                                 leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 作弊被抓，但他们似乎私下与荷官达成了某种交易（贿赂？），荷官随后放过了他们。"
                                 await self._leak_information(
                                     game, leak_msg, self.LEAK_BRIBE_MOVE_BASE, player_id, player_id
                                 )
 
                             else:
-                                # (常规失败)
                                 bribe_successful = False
                                 if payment_type == "UPFRONT":
                                     ps.chips -= bribe_cost
@@ -2566,58 +2571,92 @@ class GameController:
                 )
             else:
                 await self.god_print(f"【安保提示】: (大成功) {player_name} 的贿赂未引起警戒值上升。", 0.5)
-            # --- [修复结束] ---
 
-            # 准备日志
-            log_payload = {
-                "success": False,
-                "detected": True,
-                "error": "被当场抓住",
-                "raw": cheat_move,
-                "cards": [
-                    {
-                        "card_index": m["card_index_display"],
-                        "from": m.get("from"),
-                        "to": m.get("to"),
-                    }
-                    for m in modifications
-                ],
-                "probability": round(detection_probability, 3),
-                "bribe_attempted": bribe_attempted,
-                "bribe_success": bribe_successful,
-                "bribe_cost": bribe_cost if bribe_attempted else 0
-            }
-            result["detected"] = True
+            # --- [!! 核心逻辑修复 (替换) !!] ---
 
             if not bribe_successful:
-                # --- [原 修复 1.1]：执行淘汰惩罚 (仅当贿赂失败或未尝试时) ---
-                # ps 已经在上面获取了
-                penalty_pool = ps.chips  # 这是剩余的筹码
+                # --- 1. 贿赂失败 = 作弊失败 (淘汰) ---
                 ps.chips = 0
-                ps.alive = False  # 淘汰玩家
-                game.state.pot += penalty_pool
-                # self.players[player_id].alive = False # <-- [BUG 修复]: 此行被移除。
-                self.persistent_chips[player_id] = 0  # 永久筹码清零
-                result["penalty_elimination"] = True  # (新) 设置标志位
+                ps.alive = False
+                game.state.pot += penalty_chips_at_stake
+                self.persistent_chips[player_id] = 0
+                result["penalty_elimination"] = True
                 await self.god_print(f"【作弊惩罚】: {player_name} 被当场抓获，筹码清零并淘汰出局！", 0.5)
-                # --- [惩罚结束] ---
+
+                log_payload = {
+                    "success": False,
+                    "detected": True,
+                    "error": "被当场抓住，贿赂失败",
+                    "raw": cheat_move,
+                    "cards": [
+                        {"card_index": m["card_index_display"], "from": m.get("from"), "to": m.get("to"), }
+                        for m in modifications
+                    ],
+                    "probability": round(detection_probability, 3),
+                    "bribe_attempted": bribe_attempted,
+                    "bribe_success": bribe_successful,
+                    "bribe_cost": bribe_cost if bribe_attempted else 0
+                }
+                self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+                player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)
+                result["detected"] = True
+                return result
+
             else:
-                # 贿赂成功，玩家幸存
+                # --- 2. 贿赂成功 = 作弊成功 (换牌) ---
                 result["bribe_successful"] = True
                 result["penalty_elimination"] = False
-                # 刷新看板以显示减少的筹码
+
+                # (↓) 按你的要求：执行换牌
+                for m in modifications:
+                    ps.hand[m["index"]] = m["new"]
+
                 await self.god_panel_update(self._build_panel_data(game, -1))
 
-            self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
-            player_obj.update_experience_from_cheat(False, cheat_type_raw, log_payload)  # 注意：作弊本身是 "False" (失败)
-            return result
+                cover_story = cheat_move.get("cover_story")
 
+                # (↓) 按你的要求：记录“成功”
+                log_payload = {
+                    "success": True,
+                    "detected": True,  # (仍然是被发现了)
+                    "bribe_success": True,
+                    "cards": [
+                        {"card_index": m["card_index_display"], "from": m.get("from"), "to": m.get("to"), }
+                        for m in modifications
+                    ],
+                    "cover_story": cover_story,
+                    "probability": round(detection_probability, 3),
+                    "bribe_cost": bribe_cost if bribe_attempted else 0,
+                    "d20_roll": d20_roll if bribe_attempted else None
+                }
+                self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
+                player_obj.update_experience_from_cheat(True, cheat_type_raw, log_payload)  # (经验: 成功)
+
+                await self.god_print(
+                    f"【上帝(作弊日志)】: {player_name} 贿赂成功，作弊被强行执行 ({changes_desc})。", 0.5
+                )
+
+                leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 作弊被抓，但他们似乎私下与荷官达成了某种交易（贿赂？），荷官随后放过了他们。"
+                await self._leak_information(
+                    game, leak_msg, self.LEAK_BRIBE_MOVE_BASE, player_id, player_id
+                )
+
+                result["success"] = True
+                result["cards"] = log_payload["cards"]
+                return result
+            # --- [!! 核心逻辑修复 (结束) !!] ---
+
+        # --- (此块不变) 未被发现 = 作弊成功 (换牌) ---
         for m in modifications:
             ps.hand[m["index"]] = m["new"]
+
+        # (↓↓ 新增此行，立即刷新面板 ↓↓)
+        await self.god_panel_update(self._build_panel_data(game, -1))
 
         cover_story = cheat_move.get("cover_story")
         log_payload = {
             "success": True,
+            "detected": False,  # (未被发现)
             "cards": [
                 {
                     "card_index": m["card_index_display"],
@@ -2632,30 +2671,19 @@ class GameController:
         self.cheat_action_log.append((self.hand_count, player_id, cheat_type_raw, log_payload))
         player_obj.update_experience_from_cheat(True, cheat_type_raw, log_payload)
 
-        if cheat_type_raw == "SWAP_SUIT":
-            changes_desc = ", ".join(
-                f"第 {m['card_index_display']} 张 {m['from']}→{m['to']}" for m in modifications
-            )
-        else:
-            changes_desc = ", ".join(
-                f"第 {m['card_index_display']} 张 {m['from']}→{m['to']}" for m in modifications
-            )
-
         await self.god_print(
             f"【上帝(作弊日志)】: {player_name} 偷偷修改了 {len(modifications)} 张牌 ({changes_desc})。",
             0.5
         )
 
-        # --- [修复 19.3 (修改版)] 作弊行为泄露 ---
         leak_msg = f"你注意到 {player_name} (玩家 {player_id}) 的动作非常可疑... 似乎在荷官不注意时调换了手牌。"
         await self._leak_information(
             game,
             leak_msg,
-            self.LEAK_CHEAT_MOVE_BASE,  # (新) 使用基础概率
-            player_id,  # (新) 传入行动者 ID
+            self.LEAK_CHEAT_MOVE_BASE,
+            player_id,
             player_id
         )
-        # --- [修复 19.3 结束] ---
 
         result["success"] = True
         result["cards"] = log_payload["cards"]
@@ -2986,12 +3014,6 @@ class GameController:
                 # --- 调试块结束 ---
 
             cheat_context = await self._handle_cheat_move(game, current_player_idx, action_json.get("cheat_move"))
-
-            # --- [修复 3.1] (作弊成功后立即刷新看板) ---
-            if cheat_context.get("success"):
-                if not cheat_context.get("penalty_elimination"):
-                    await self.god_print(f"【上帝(提示)】: 作弊成功，看板手牌已更新。", 0.1)
-                    await self.god_panel_update(self._build_panel_data(game, start_player_id))
 
             # --- [修改点 1.2 (修正版)]：如果玩家因作弊被淘汰，则跳过本轮后续动作 ---
             if cheat_context.get("penalty_elimination"):
