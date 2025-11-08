@@ -19,8 +19,6 @@ player_configs = [
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
     {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
     {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
-    {"name": "Qwen3", "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"},
-    {"name": "Ling", "model": "inclusionAI/Ling-1T"},
 ]
 
 # --- 2. 自动关闭控制 ---
