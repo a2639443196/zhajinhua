@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Callable, Awaitable, Tuple, Optional, Set
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
+from texas_holdem import TexasHoldemGame, TexasHandType, evaluate_best_hand
 from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType, PlayerState
 from player import Player
 
@@ -17,30 +18,59 @@ USED_PERSONA_PATH = BASE_DIR / "used_personas.json" # <-- 📌 新增人设记�
 class SystemVault:
     """金库逻辑：(新) 根据经验和手牌强度评估贷款请求。"""
 
-    def __init__(self, base_interest_rate: float = 0.16):
+    def __init__(self, base_interest_rate: float = 0.16, variant: str = "zhajinhua"):
         self.base_interest_rate = base_interest_rate
+        self.variant = variant
 
-    def _calculate_hand_strength_bonus(self, hand: list[Card], has_looked: bool) -> int:
+    def _calculate_hand_strength_bonus(
+        self,
+        hand: list[Card],
+        has_looked: bool,
+        community_cards: Optional[list[Card]] = None,
+    ) -> int:
         """ (新) 根据手牌类型计算额外贷款额度 """
         if not has_looked or not hand:
             # 没看牌，或者没手牌，不能以手牌为抵押
             return 0
 
         try:
-            hand_type = evaluate_hand(hand).hand_type
+            if self.variant == "texas":
+                hand_rank = evaluate_best_hand(hand, community_cards or [])
+                hand_type_value = hand_rank.hand_type
+            else:
+                hand_type_value = evaluate_hand(hand).hand_type
         except Exception:
             return 0
 
+        if self.variant == "texas":
+            if hand_type_value == TexasHandType.STRAIGHT_FLUSH:
+                return 3500
+            if hand_type_value == TexasHandType.FOUR_OF_A_KIND:
+                return 3000
+            if hand_type_value == TexasHandType.FULL_HOUSE:
+                return 2200
+            if hand_type_value == TexasHandType.FLUSH:
+                return 1500
+            if hand_type_value == TexasHandType.STRAIGHT:
+                return 1200
+            if hand_type_value == TexasHandType.THREE_OF_A_KIND:
+                return 800
+            if hand_type_value == TexasHandType.TWO_PAIR:
+                return 500
+            if hand_type_value == TexasHandType.PAIR:
+                return 350
+            return 0
+
         # (新) 牌型奖金 (数值可按需调整)
-        if hand_type == HandType.TRIPS:  # 豹子
+        if hand_type_value == HandType.TRIPS:  # 豹子
             return 3000
-        if hand_type == HandType.STRAIGHT_FLUSH:  # 顺金
+        if hand_type_value == HandType.STRAIGHT_FLUSH:  # 顺金
             return 2500
-        if hand_type == HandType.FLUSH:  # 金花
+        if hand_type_value == HandType.FLUSH:  # 金花
             return 1200
-        if hand_type == HandType.STRAIGHT:  # 顺子
+        if hand_type_value == HandType.STRAIGHT:  # 顺子
             return 800
-        if hand_type == HandType.PAIR:  # 对子
+        if hand_type_value == HandType.PAIR:  # 对子
             return 400
 
         # 单张 (High Card) 或 235 不提供额外奖金
@@ -55,7 +85,11 @@ class SystemVault:
         base_loan = baseline + experience_bonus
 
         # 2. 手牌强度奖金
-        hand_bonus = self._calculate_hand_strength_bonus(hand, has_looked)
+        community_cards = []
+        if self.variant == "texas" and game and game.state:
+            community_cards = getattr(game.state, "community_cards", [])
+
+        hand_bonus = self._calculate_hand_strength_bonus(hand, has_looked, community_cards)
 
         return base_loan + hand_bonus
 
@@ -77,6 +111,10 @@ class SystemVault:
         # (安全回退)
         current_hand = []
         has_looked = False
+        community_cards = []
+        if self.variant == "texas" and game and game.state:
+            community_cards = getattr(game.state, "community_cards", [])
+
         if player_id is not None and game and game.state:
             ps = game.state.players[player_id]
             current_hand = ps.hand
@@ -101,7 +139,7 @@ class SystemVault:
         interest_rate = min(0.45, interest_rate)
 
         # (新) 手牌越好，利率越低
-        hand_bonus = self._calculate_hand_strength_bonus(current_hand, has_looked)
+        hand_bonus = self._calculate_hand_strength_bonus(current_hand, has_looked, community_cards)
         interest_rate -= (hand_bonus / 3000.0) * 0.15  # (好牌最高可降低 15% 利率)
         interest_rate = max(0.05, interest_rate)  # (最低 5% 利率)
 
@@ -140,11 +178,13 @@ class GameController:
                  god_print_callback: Callable[..., Awaitable[None]],
                  god_stream_start_callback: Callable[..., Awaitable[None]],
                  god_stream_chunk_callback: Callable[..., Awaitable[None]],
-                 god_panel_update_callback: Callable[..., Awaitable[None]]):
+                 god_panel_update_callback: Callable[..., Awaitable[None]],
+                 game_variant: str = "zhajinhua"):
 
         self.player_configs = player_configs
         self.num_players = len(player_configs)
         self.players = [Player(config["name"], config["model"]) for config in player_configs]
+        self.game_variant = game_variant
         self.global_alert_level: float = 0.0
         self.CHEAT_ALERT_INCREASE = 25.0  # (新) 每次抓获增加 25 点
         self.CHEAT_ALERT_DECAY_PER_HAND = 3.0  # (新) 每手牌降低 3 点
@@ -186,7 +226,7 @@ class GameController:
                 print(f"【上帝(严重警告)】: 加载 Prompt 模板 {path.name} 失败: {e}")
         # --- [修复结束] ---
 
-        self.vault = SystemVault()
+        self.vault = SystemVault(variant=self.game_variant)
         self.active_effects: List[Dict[str, object]] = []
 
         default_chips = GameConfig.initial_chips
@@ -250,6 +290,35 @@ class GameController:
         self._ante_increase_interval = 5
         self._ante_increment = 20
 
+    # --- Variant helpers -------------------------------------------------
+    def _is_texas(self) -> bool:
+        return self.game_variant.lower() == "texas"
+
+    def _initial_hand_size(self) -> int:
+        return 2 if self._is_texas() else 3
+
+    def _get_board_cards(self, game: ZhajinhuaGame | TexasHoldemGame | None) -> list[Card]:
+        if not game or not getattr(game, "state", None):
+            return []
+        return list(getattr(game.state, "community_cards", []))
+
+    def _evaluate_hand_rank(self, game: ZhajinhuaGame | TexasHoldemGame, player_id: int):
+        ps = game.state.players[player_id]
+        if self._is_texas():
+            return evaluate_best_hand(ps.hand, self._get_board_cards(game))
+        return evaluate_hand(ps.hand)
+
+    def _create_game_instance(self, config: GameConfig, start_player_id: int):
+        if self._is_texas():
+            return TexasHoldemGame(config, self.persistent_chips, start_player_id)
+        return ZhajinhuaGame(config, self.persistent_chips, start_player_id)
+
+    def _raise_multiplier(self, game: ZhajinhuaGame | TexasHoldemGame, player_id: int) -> int:
+        if self._is_texas():
+            return 1
+        ps = game.state.players[player_id]
+        return 2 if ps.looked else 1
+
     def get_alive_player_count(self) -> int:
         return sum(1 for chips in self.persistent_chips if chips > 0)
 
@@ -295,6 +364,10 @@ class GameController:
     def _build_panel_data(self, game: ZhajinhuaGame | None, start_player_id: int = -1) -> dict:
         # (已修改)
         players_data = []
+        board_cards = []
+        if self._is_texas():
+            board_cards = [self._format_card(card) for card in self._get_board_cards(game)]
+
         for i, p in enumerate(self.players):
             hand_str = "..."
             player_looked = False
@@ -317,10 +390,6 @@ class GameController:
                 else:
                     player_is_active = True
                     if p_state.hand:
-                        # --- (BUG 修复) ---
-                        # sorted_hand = sorted(ps.hand, key=lambda c: c.rank, reverse=True) # (错误)
-                        # sorted_hand = sorted(p_state.hand, key=lambda c: c.rank, reverse=True)  # (正确)
-                        # --- (修复结束) ---
                         hand_str = ' '.join([INT_TO_RANK[c.rank] + SUITS[c.suit] for c in p_state.hand])
                     else:
                         hand_str = "..."
@@ -345,7 +414,9 @@ class GameController:
             "global_alert_level": round(self.global_alert_level, 1),
             "players": players_data,
             # (↓ 新增此行 ↓)
-            "current_player": game.state.current_player if game and game.state else -1
+            "current_player": game.state.current_player if game and game.state else -1,
+            "community_cards": board_cards,
+            "stage": getattr(game.state, "stage", "") if game and game.state else ""
         }
 
     def _select_item_for_auction(self) -> tuple[str, Dict[str, object]]:
@@ -409,7 +480,7 @@ class GameController:
     def _format_card(self, card: Card) -> str:
         return INT_TO_RANK[card.rank] + SUITS[card.suit]
 
-    def _get_next_active_player(self, game: ZhajinhuaGame, start_idx: int) -> Optional[int]:
+    def _get_next_active_player(self, game: ZhajinhuaGame | TexasHoldemGame, start_idx: int) -> Optional[int]:
         st = game.state
         candidate = start_idx
         for _ in range(self.num_players):
@@ -440,10 +511,10 @@ class GameController:
 
         return False, None
 
-    def _record_hand_start_state(self, game: ZhajinhuaGame) -> None:
+    def _record_hand_start_state(self, game: ZhajinhuaGame | TexasHoldemGame) -> None:
         self._hand_starting_chips = [ps.chips for ps in game.state.players]
 
-    def _apply_luck_boost(self, game: ZhajinhuaGame, player_id: int) -> None:
+    def _apply_luck_boost(self, game: ZhajinhuaGame | TexasHoldemGame, player_id: int) -> None:
         effect = self._consume_effect(player_id, "luck_boost")
         if not effect:
             return
@@ -452,9 +523,12 @@ class GameController:
         if not player_state.hand or not game.state.deck:
             return
 
-        hand_rank = evaluate_hand(player_state.hand)
-        if hand_rank.hand_type >= HandType.PAIR:
-            # 已经不错了，不再调整
+        hand_rank = self._evaluate_hand_rank(game, player_id)
+        if self._is_texas():
+            strong_enough = hand_rank.hand_type >= TexasHandType.PAIR
+        else:
+            strong_enough = hand_rank.hand_type >= HandType.PAIR
+        if strong_enough:
             return
 
         lowest_index = min(range(len(player_state.hand)), key=lambda idx: player_state.hand[idx].rank)
@@ -484,7 +558,7 @@ class GameController:
             0.5
         )
 
-    def _apply_bad_luck_guard(self, game: ZhajinhuaGame, player_id: int) -> None:
+    def _apply_bad_luck_guard(self, game: ZhajinhuaGame | TexasHoldemGame, player_id: int) -> None:
         effect = self._find_effect(player_id, "bad_luck_guard")
         if not effect:
             return
@@ -492,9 +566,14 @@ class GameController:
         data = effect.setdefault("data", {})
         streak = int(data.get("streak", 0))
         player_state = game.state.players[player_id]
-        hand_rank = evaluate_hand(player_state.hand)
+        hand_rank = self._evaluate_hand_rank(game, player_id)
 
         def is_bad_hand() -> bool:
+            if self._is_texas():
+                if hand_rank.hand_type == TexasHandType.HIGH_CARD:
+                    highest_rank = max(card.rank for card in player_state.hand)
+                    return highest_rank < RANK_TO_INT["Q"]
+                return False
             if hand_rank.hand_type == HandType.HIGH_CARD:
                 highest_rank = max(card.rank for card in player_state.hand)
                 return highest_rank < RANK_TO_INT["Q"]
@@ -504,11 +583,12 @@ class GameController:
             streak += 1
             if streak >= 3:
                 deck = game.state.deck
-                if len(deck) >= 3:
+                expected = self._initial_hand_size()
+                if len(deck) >= expected:
                     deck.extend(player_state.hand)
                     random.shuffle(deck)
-                    player_state.hand = [deck.pop() for _ in range(3)]
-                    new_rank = evaluate_hand(player_state.hand)
+                    player_state.hand = [deck.pop() for _ in range(expected)]
+                    new_rank = self._evaluate_hand_rank(game, player_id)
                     self._append_system_message(
                         player_id,
                         "护运珠触发，系统重新发给你一手新牌。"
@@ -522,7 +602,7 @@ class GameController:
         else:
             data["streak"] = 0
 
-    def _apply_start_of_hand_effects(self, game: ZhajinhuaGame) -> None:
+    def _apply_start_of_hand_effects(self, game: ZhajinhuaGame | TexasHoldemGame) -> None:
         for idx, ps in enumerate(game.state.players):
             if not ps.alive:
                 continue
@@ -583,7 +663,7 @@ class GameController:
 
         return {"loser": final_loser}
 
-    def _apply_post_hand_effects(self, game: ZhajinhuaGame, winner_id: Optional[int],
+    def _apply_post_hand_effects(self, game: ZhajinhuaGame | TexasHoldemGame, winner_id: Optional[int],
                                  final_pot_size: int) -> List[tuple[str, float]]:
         messages: List[tuple[str, float]] = []
 
@@ -641,7 +721,7 @@ class GameController:
 
         return messages
 
-    async def _settle_bribe_debts(self, game: ZhajinhuaGame) -> List[tuple[str, float]]:
+    async def _settle_bribe_debts(self, game: ZhajinhuaGame | TexasHoldemGame) -> List[tuple[str, float]]:
         """(新) 结算所有贿赂欠款"""
         messages: List[tuple[str, float]] = []
 
@@ -1657,7 +1737,7 @@ class GameController:
                 await self.god_print(f"最终胜利者是: {p.name} (剩余筹码: {self.persistent_chips[i]})!", 5)
                 break
 
-    def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int,
+    def _build_llm_prompt(self, game: ZhajinhuaGame | TexasHoldemGame, player_id: int, start_player_id: int,
                           player_debuffs: Optional[set[str]] = None) -> tuple:
         # ... (此函数无修改) ...
         st = game.state
@@ -1668,6 +1748,14 @@ class GameController:
             f"底池 (Pot): {st.pot}", f"当前暗注 (Base Bet): {st.current_bet}",
             f"最后加注者: {self.players[st.last_raiser].name if st.last_raiser is not None else 'N/A'}"
         ]
+        if self._is_texas():
+            state_summary_lines.append(f"当前阶段: {getattr(st, 'stage', 'preflop').upper()}")
+            board_cards = self._get_board_cards(game)
+            if board_cards:
+                board_str = ' '.join(self._format_card(card) for card in board_cards)
+                state_summary_lines.append(f"公共牌: {board_str}")
+            else:
+                state_summary_lines.append("公共牌: 尚未发出")
         state_summary_lines.append("\n玩家信息:")
         player_status_list: list[str] = []
         for i, p in enumerate(st.players):
@@ -1701,9 +1789,12 @@ class GameController:
                 hand_str_list.append(f"  - (索引 {card_index}): {card_str}")
 
             try:
-                hand_rank_obj = evaluate_hand(ps.hand)
+                hand_rank_obj = self._evaluate_hand_rank(game, player_id)
                 hand_list_str = "\n".join(hand_str_list)
-                my_hand = f"你的手牌是 (牌型: {hand_rank_obj.hand_type.name}):\n{hand_list_str}"
+                descriptor = hand_rank_obj.hand_type.name
+                if self._is_texas():
+                    descriptor = f"{hand_rank_obj.hand_type.name} (最佳五张组合)"
+                my_hand = f"你的手牌是 (牌型: {descriptor}):\n{hand_list_str}"
             except Exception:
                 my_hand = f"你的手牌是:\n" + "\n".join(hand_str_list)
             # --- [修复 15.1 结束] ---
@@ -1804,7 +1895,7 @@ class GameController:
 
         min_raise_increment = st.config.min_raise
         dealer_name = self.players[start_player_id].name
-        multiplier = 2 if ps.looked else 1
+        multiplier = self._raise_multiplier(game, player_id)
 
         # --- [修复 18.2] 构建全场道具情报 ---
         field_item_intel_lines = []
@@ -1889,7 +1980,7 @@ class GameController:
             table_seating_str, opponent_reference_str
         )
 
-    def _parse_action_json(self, game: ZhajinhuaGame, action_json: dict, player_id: int,
+    def _parse_action_json(self, game: ZhajinhuaGame | TexasHoldemGame, action_json: dict, player_id: int,
                            available_actions: list) -> (Action, str):
         self._parse_warnings.clear()
         action_name = action_json.get("action", "FOLD").upper()
@@ -1925,7 +2016,7 @@ class GameController:
             player_state = game.state.players[player_id]
             call_cost = game.get_call_cost(player_id)
             chips = player_state.chips
-            multiplier = 2 if player_state.looked else 1
+            multiplier = self._raise_multiplier(game, player_id)
             min_raise_inc = game.state.config.min_raise
             amount_val: Optional[int] = None
             try:
@@ -2008,7 +2099,7 @@ class GameController:
             # 在 _parse_action_json 中执行 RAISE 筹码验证
             ps = game.state.players[player_id]
             call_cost = game.get_call_cost(player_id)
-            multiplier = 2 if ps.looked else 1
+            multiplier = self._raise_multiplier(game, player_id)
             total_raise_cost = call_cost + (amount * multiplier)
 
             if ps.chips < total_raise_cost:
@@ -2905,11 +2996,12 @@ class GameController:
                 0.5
             )
 
-        game = ZhajinhuaGame(config, self.persistent_chips, start_player_id)
-        game.set_event_listener(
-            "before_compare_resolution",
-            lambda **kwargs: self._handle_compare_resolution(game, **kwargs)
-        )
+        game = self._create_game_instance(config, start_player_id)
+        if not self._is_texas():
+            game.set_event_listener(
+                "before_compare_resolution",
+                lambda **kwargs: self._handle_compare_resolution(game, **kwargs)
+            )
 
         await self._check_loan_repayments(game)
 

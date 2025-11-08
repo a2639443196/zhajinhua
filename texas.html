@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM 博弈 - 德州扑克观战</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg-color: #0c0d11;
+            --card-color: rgba(28, 32, 45, 0.9);
+            --accent: #4cafef;
+            --accent-strong: #00e5ff;
+            --danger: #ff5370;
+            --success: #66ffa6;
+            --text-primary: #f5f7ff;
+            --text-secondary: #b6bfd6;
+            --border-color: rgba(255, 255, 255, 0.06);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+            background: radial-gradient(circle at top, rgba(40, 48, 72, 0.5), var(--bg-color));
+            color: var(--text-primary);
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            justify-content: center;
+            padding: 36px 24px 48px;
+            min-height: 100vh;
+        }
+
+        .page {
+            width: min(1400px, 100%);
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+        }
+
+        header {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: clamp(1.8rem, 3.5vw, 2.4rem);
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+
+        header p {
+            margin: 0;
+            color: var(--text-secondary);
+            font-size: 1.05rem;
+        }
+
+        main {
+            display: flex;
+            flex-direction: column;
+            gap: 22px;
+        }
+
+        .card {
+            background: var(--card-color);
+            backdrop-filter: blur(16px);
+            border-radius: 22px;
+            padding: 24px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+        }
+
+        .status-card {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+            align-items: stretch;
+        }
+
+        .status-overview {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .stage-info {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 18px;
+            padding: 16px;
+        }
+
+        .community-row {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .community-card {
+            min-width: 48px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.08);
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.05rem;
+        }
+
+        .status-label {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            letter-spacing: 0.05em;
+        }
+
+        .status-value {
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .controls {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .control-button {
+            appearance: none;
+            border: none;
+            border-radius: 14px;
+            padding: 12px 24px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            background: linear-gradient(145deg, rgba(76, 175, 239, 0.9), rgba(0, 149, 218, 0.82));
+            box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+        }
+
+        .control-button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 14px 26px rgba(0, 0, 0, 0.38);
+        }
+
+        .control-button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .control-button:disabled {
+            opacity: 0.45;
+            box-shadow: none;
+            cursor: default;
+        }
+
+        .control-button.stop {
+            background: linear-gradient(145deg, rgba(255, 83, 112, 0.92), rgba(255, 105, 135, 0.84));
+        }
+
+        .control-button.clear {
+            background: linear-gradient(145deg, rgba(123, 97, 255, 0.92), rgba(166, 95, 255, 0.85));
+        }
+
+        #god-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .panel-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 18px;
+        }
+
+        .summary-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 16px 18px;
+            text-align: center;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+        }
+
+        .summary-item span {
+            display: block;
+            font-size: 0.85rem;
+            letter-spacing: 0.08em;
+            color: var(--text-secondary);
+        }
+
+        .summary-item strong {
+            display: block;
+            margin-top: 6px;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .panel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 18px;
+        }
+
+        .panel-card {
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 18px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+            min-height: 160px;
+        }
+
+        .panel-card::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            pointer-events: none;
+        }
+
+        .panel-card h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+
+        .panel-card .chips {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .panel-card .hand {
+            font-family: "JetBrains Mono", "Menlo", monospace;
+            font-size: 1.05rem;
+            letter-spacing: 0.12em;
+        }
+
+        .panel-card .tag {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(0, 229, 255, 0.15);
+            color: var(--accent-strong);
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+        }
+
+        .panel-card .status {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .log-card {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .log-card header {
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: center;
+            gap: 14px;
+        }
+
+        #log-container {
+            max-height: 540px;
+            overflow-y: auto;
+            padding: 16px;
+            border-radius: 16px;
+            background: rgba(15, 18, 26, 0.9);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .log-entry {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-size: 0.95rem;
+            color: #e9ecff;
+            white-space: pre-wrap;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 24px 16px 36px;
+            }
+
+            .card {
+                padding: 18px;
+            }
+
+            header h1 {
+                font-size: 1.8rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header>
+        <h1>LLM 博弈 · 德州扑克</h1>
+        <p>实时观战多模型德州扑克锦标赛。所有经济、拍卖、安保系统与扎金花保持一致。</p>
+    </header>
+    <main>
+        <section class="card status-card">
+            <div class="status-overview">
+                <div>
+                    <div class="status-label">连接状态</div>
+                    <div id="status-text" class="status-value">等待连接...</div>
+                </div>
+                <div>
+                    <div class="status-label">当前手数</div>
+                    <div class="status-value" id="panel-hand-count">0</div>
+                </div>
+                <div>
+                    <div class="status-label">当前底池</div>
+                    <div class="status-value" id="panel-current-pot">0</div>
+                </div>
+                <div>
+                    <div class="status-label">警戒值</div>
+                    <div class="status-value" id="panel-alert-level">0.0</div>
+                </div>
+            </div>
+            <div class="stage-info">
+                <div class="status-label">阶段</div>
+                <div class="status-value" id="stage-name">--</div>
+                <div class="status-label">公共牌</div>
+                <div id="community-cards" class="community-row">
+                    <span class="community-card">?</span>
+                    <span class="community-card">?</span>
+                    <span class="community-card">?</span>
+                    <span class="community-card">?</span>
+                    <span class="community-card">?</span>
+                </div>
+            </div>
+            <div class="controls">
+                <button id="start-btn" class="control-button">开始德州扑克</button>
+                <button id="stop-btn" class="control-button stop" disabled>停止</button>
+                <button id="clear-btn" class="control-button clear">清空日志</button>
+                <button id="export-btn" class="control-button" disabled>导出日志</button>
+            </div>
+        </section>
+
+        <section id="god-panel" class="card">
+            <div class="panel-header">
+                <h2>上帝面板</h2>
+                <div id="current-player" class="status-label">当前行动玩家：--</div>
+            </div>
+            <div class="panel-summary">
+                <div class="summary-item">
+                    <span>累计手数</span>
+                    <strong id="summary-hand-count">0</strong>
+                </div>
+                <div class="summary-item">
+                    <span>底池大小</span>
+                    <strong id="summary-pot">0</strong>
+                </div>
+                <div class="summary-item">
+                    <span>安全警戒值</span>
+                    <strong id="summary-alert">0.0</strong>
+                </div>
+            </div>
+            <div id="panel-grid" class="panel-grid"></div>
+        </section>
+
+        <section class="card log-card">
+            <header>
+                <h2>实时日志</h2>
+                <div class="status-label">日志条目：<span id="log-count">0 条</span></div>
+            </header>
+            <div id="log-container"></div>
+        </section>
+    </main>
+</div>
+
+<script>
+    const statusDiv = document.getElementById("status-text");
+    const startButton = document.getElementById("start-btn");
+    const stopButton = document.getElementById("stop-btn");
+    const clearButton = document.getElementById("clear-btn");
+    const exportButton = document.getElementById("export-btn");
+    const logContainer = document.getElementById("log-container");
+    const logCountSpan = document.getElementById("log-count");
+    const stageNameSpan = document.getElementById("stage-name");
+    const communityContainer = document.getElementById("community-cards");
+    const currentPlayerLabel = document.getElementById("current-player");
+
+    let ws = null;
+    let logCount = 0;
+
+    function connect() {
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        setButtonState(false, true);
+
+        ws.onopen = () => {
+            statusDiv.textContent = "已连接。";
+            statusDiv.style.color = "var(--success)";
+            setButtonState(false, false);
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "log") {
+                appendLog(data.message);
+            } else if (data.type === "stream_start") {
+                appendLog(data.message, true);
+            } else if (data.type === "stream_chunk") {
+                appendLogChunk(data.chunk);
+            } else if (data.type === "status") {
+                const running = data.running;
+                statusDiv.textContent = running ? "锦标赛进行中..." : "等待开始";
+                statusDiv.style.color = running ? "var(--accent)" : "var(--text-secondary)";
+                setButtonState(running, false);
+            } else if (data.type === "panel_update") {
+                updateGodPanel(data.data);
+            }
+        };
+
+        ws.onclose = () => {
+            statusDiv.textContent = "连接已断开。";
+            statusDiv.style.color = "var(--danger)";
+            setButtonState(false, false);
+            setTimeout(connect, 5000);
+        };
+
+        ws.onerror = () => {
+            statusDiv.textContent = "连接错误。";
+            statusDiv.style.color = "var(--danger)";
+            ws.close();
+        };
+    }
+
+    function setButtonState(isRunning, isConnecting = false) {
+        if (isConnecting) {
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            clearButton.disabled = true;
+            exportButton.disabled = true;
+            startButton.textContent = "连接中...";
+        } else if (isRunning) {
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            clearButton.disabled = true;
+            exportButton.disabled = true;
+            startButton.textContent = "德州扑克运行中...";
+        } else {
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            clearButton.disabled = false;
+            exportButton.disabled = false;
+            startButton.textContent = "开始德州扑克";
+        }
+    }
+
+    startButton.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({type: "START_GAME", variant: "texas"}));
+        }
+    };
+
+    stopButton.onclick = () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            if (confirm("确定要立即停止当前锦标赛吗？")) {
+                ws.send(JSON.stringify({type: "STOP_GAME"}));
+            }
+        }
+    };
+
+    clearButton.onclick = () => {
+        logContainer.innerHTML = "";
+        logCount = 0;
+        updateLogCount();
+    };
+
+    exportButton.onclick = () => {
+        window.open("/download_latest_log", "_blank");
+    };
+
+    function updateLogCount() {
+        logCountSpan.textContent = `${logCount} 条`;
+    }
+
+    function updateCommunityCards(cards = []) {
+        const placeholders = Math.max(5, cards.length);
+        communityContainer.innerHTML = "";
+        for (let i = 0; i < placeholders; i++) {
+            const span = document.createElement("span");
+            span.className = "community-card";
+            span.textContent = cards[i] || "?";
+            communityContainer.appendChild(span);
+        }
+    }
+
+    function updateGodPanel(data) {
+        document.getElementById("panel-hand-count").textContent = data.hand_count ?? 0;
+        document.getElementById("panel-current-pot").textContent = data.current_pot ?? 0;
+
+        const alertLevelEl = document.getElementById("panel-alert-level");
+        if (alertLevelEl) {
+            const alertLevel = data.global_alert_level ?? 0;
+            alertLevelEl.textContent = alertLevel.toFixed(1);
+            if (alertLevel >= 100) {
+                alertLevelEl.style.color = "var(--danger)";
+            } else if (alertLevel > 50) {
+                alertLevelEl.style.color = "rgba(255, 193, 7, 0.9)";
+            } else {
+                alertLevelEl.style.color = "var(--success)";
+            }
+        }
+
+        stageNameSpan.textContent = (data.stage || "--").toUpperCase();
+        updateCommunityCards(data.community_cards || []);
+
+        currentPlayerLabel.textContent = data.current_player >= 0
+            ? `当前行动玩家：${(data.players?.[data.current_player]?.name) || '--'}`
+            : "当前行动玩家：--";
+
+        document.getElementById("summary-hand-count").textContent = data.hand_count ?? 0;
+        document.getElementById("summary-pot").textContent = data.current_pot ?? 0;
+        document.getElementById("summary-alert").textContent = (data.global_alert_level ?? 0).toFixed(1);
+
+        const grid = document.getElementById("panel-grid");
+        grid.innerHTML = "";
+        (data.players || []).forEach(player => {
+            const card = document.createElement("div");
+            card.className = "panel-card";
+            const statusText = player.is_active ? "在局" : (player.hand_str || "已离场");
+            card.innerHTML = `
+                <h3>${player.name}${player.is_dealer ? " · 庄家" : ""}</h3>
+                <div class="chips">${player.chips}</div>
+                <div class="hand">${player.hand_str || "..."}</div>
+                <div class="status">状态：${statusText}</div>
+                <div class="status">经验：${player.experience_level} (${player.experience_value})</div>
+            `;
+            grid.appendChild(card);
+        });
+    }
+
+    let streamBuffer = null;
+    function appendLog(message, isStreamStart = false) {
+        if (isStreamStart) {
+            streamBuffer = document.createElement("div");
+            streamBuffer.className = "log-entry";
+            streamBuffer.textContent = message;
+            logContainer.appendChild(streamBuffer);
+        } else {
+            const entry = document.createElement("div");
+            entry.className = "log-entry";
+            entry.textContent = message;
+            logContainer.appendChild(entry);
+        }
+        logCount++;
+        updateLogCount();
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function appendLogChunk(chunk) {
+        if (streamBuffer) {
+            streamBuffer.textContent += chunk;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+    }
+
+    connect();
+</script>
+</body>
+</html>

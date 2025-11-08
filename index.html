@@ -671,7 +671,7 @@
 
     startButton.onclick = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({type: "START_GAME"}));
+            ws.send(JSON.stringify({type: "START_GAME", variant: "zhajinhua"}));
         }
     };
 
