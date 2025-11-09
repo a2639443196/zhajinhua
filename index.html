@@ -146,6 +146,16 @@
             background: linear-gradient(145deg, rgba(123, 97, 255, 0.92), rgba(166, 95, 255, 0.85));
         }
 
+        .log-box {
+            background: rgba(0,0,0,0.2);
+            border-radius: 10px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9em;
+        }
+
         #god-panel {
             display: flex;
             flex-direction: column;
@@ -534,11 +544,23 @@
                 <span class="status-value" id="status">正在连接到服务器...</span>
             </div>
             <div class="controls">
+                <!-- 新增：游戏参数输入 -->
+                <input id="input-initial-chips" type="number" min="1" step="1" value="2000"
+                       title="初始筹码" placeholder="初始筹码" style="padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.06); color: var(--text-primary); width: 140px;" />
+                <input id="input-desperation-threshold" type="number" min="1" step="1" value="1000"
+                       title="绝境阈值" placeholder="绝境阈值" style="padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.06); color: var(--text-primary); width: 140px;" />
                 <button id="start-button" class="control-button" disabled>连接中...</button>
                 <button id="stop-button" class="control-button stop" disabled>停止游戏</button>
                 <button id="clear-button" class="control-button clear" disabled>清空日志</button>
                 <button id="export-button" class="control-button clear" disabled>导出日志</button>
             </div>
+        </section>
+
+        <section class="card">
+            <div class="panel-header">
+                <h2>公共事件日志</h2>
+            </div>
+            <div id="event-log-content" class="log-box"></div>
         </section>
 
         <section class="card" id="god-panel">
@@ -624,7 +646,8 @@
                 }
             } else if (msg.type === "panel_update") {
                 updateGodPanel(msg.data);
-
+            } else if (msg.type === "event_log_update") {
+                updateEventLog(msg.data);
             } else if (msg.type === "status") {
                 setButtonState(msg.running);
             }
@@ -671,7 +694,18 @@
 
     startButton.onclick = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({type: "START_GAME"}));
+            const initialChipsEl = document.getElementById("input-initial-chips");
+            const desperationThresholdEl = document.getElementById("input-desperation-threshold");
+            const initialChips = parseInt(initialChipsEl?.value ?? "2000", 10);
+            const desperationThreshold = parseInt(desperationThresholdEl?.value ?? "1000", 10);
+            const payload = {
+                type: "START_GAME",
+                config: {
+                    initial_chips: Number.isFinite(initialChips) && initialChips > 0 ? initialChips : 2000,
+                    desperation_threshold: Number.isFinite(desperationThreshold) && desperationThreshold > 0 ? desperationThreshold : 1000,
+                }
+            };
+            ws.send(JSON.stringify(payload));
         }
     };
 
@@ -701,7 +735,12 @@
 
     function updateGodPanel(data) {
         document.getElementById("panel-hand-count").textContent = data.hand_count ?? 0;
-        document.getElementById("panel-current-pot").textContent = data.current_pot ?? 0;
+        const potReal = (data.current_pot_real ?? data.current_pot ?? 0);
+        const potDisplay = (data.current_pot_display ?? potReal);
+        const potEl = document.getElementById("panel-current-pot");
+        if (potEl) {
+            potEl.textContent = `伪:${potDisplay} / 真:${potReal}`;
+        }
 
         // --- [修复 5.7]：更新警戒值 ---
         const alertLevelEl = document.getElementById("panel-alert-level");
@@ -761,8 +800,16 @@
             metaRow.className = "player-meta";
             const chipsSpan = document.createElement("span");
             chipsSpan.className = "player-chips";
-            chipsSpan.textContent = `筹码：${player.chips}`;
+            chipsSpan.textContent = `筹码(真)：${player.actual_chips ?? player.chips}`;
             metaRow.appendChild(chipsSpan);
+
+            if (player.counterfeit_display_chips != null) {
+                const fakeSpan = document.createElement("span");
+                fakeSpan.className = "player-chips-fake";
+                fakeSpan.style.marginLeft = "8px";
+                fakeSpan.textContent = `筹码(伪)：${player.counterfeit_display_chips}`;
+                metaRow.appendChild(fakeSpan);
+            }
 
             const statusTag = document.createElement("span");
             statusTag.className = `player-tag ${player.looked ? "looked" : "hidden"}`;
@@ -845,6 +892,17 @@
 
             inventoryContainer.appendChild(block);
         });
+    }
+
+    function updateEventLog(log) {
+        const logContent = document.getElementById("event-log-content");
+        logContent.innerHTML = ""; // Clear existing log
+        log.forEach(entry => {
+            const p = document.createElement("p");
+            p.textContent = JSON.stringify(entry);
+            logContent.appendChild(p);
+        });
+        logContent.scrollTop = logContent.scrollHeight;
     }
 
     function addLog(message, isStreaming = false) {

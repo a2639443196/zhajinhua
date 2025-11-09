@@ -141,6 +141,8 @@ class Player:
     def get_mood_leak_probability(self) -> float:
         """(新) 依据经验与压力决定情绪泄露概率。"""
         base = 0.33 + (self.current_pressure - 0.5) * 0.22
+        # (调整) 轻微提升整体泄露概率，以反映更高的紧张与侦测环境
+        base += 0.05
         if self.experience >= 90:
             base *= 0.45
         elif self.experience >= 60:
@@ -401,9 +403,10 @@ class Player:
                             call_cost: int,
                             table_seating_str: str,
                             opponent_reference_str: str,
-                            decide_action_template: str,  # <-- [修复] 添加模板参数
-                            stream_start_cb: Callable[[str], Awaitable[None]],
-                            stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
+                            public_event_log: str, # (新) 添加
+                    prompt_template: str, # (新) 添加
+                    stream_start_cb: Callable[[str], Awaitable[None]],
+                    stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
         """
         (已修改)
         极大增强 except 块的日志记录能力。
@@ -411,7 +414,7 @@ class Player:
         full_content_debug = ""  # (新) 用于在出错时记录
         try:
             # template = self._read_file(DECIDE_ACTION_PROMPT_PATH) # <-- [修复] 移除
-            template = decide_action_template  # <-- [修复] 使用传入的模板
+            template = prompt_template  # <-- [修复] 使用传入的模板
             if not template:
                 raise RuntimeError("无法读取 Prompt 模板文件。")
 
@@ -435,6 +438,7 @@ class Player:
                 multiplier=multiplier,
                 call_cost=call_cost,
                 table_seating=table_seating_str,
+                public_event_log=public_event_log, # (新) 添加
                 opponent_reference=opponent_reference_str
             )
             messages = [{"role": "user", "content": prompt}]

@@ -5,6 +5,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from game_controller import GameController
+import game_rules  # (新) 导入以动态覆盖 GameConfig.initial_chips
 # --- 1. (新) 日志记录和下载所需的库 ---
 import time
 from pathlib import Path
@@ -15,8 +16,11 @@ import os
 # --- (结束) ---
 # --- 1. LLM 玩家配置 (无修改) ---
 player_configs = [
-    {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
+    # {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
+    {"name": "Qwen", "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"},
+    {"name": "Ling", "model": "inclusionAI/Ling-1T"},
+    {"name": "deepseekv3", "model": "deepseek-ai/DeepSeek-V3"},
     {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
     {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
 ]
@@ -158,6 +162,10 @@ class ConnectionManager:
     async def broadcast_panel_data(self, data: dict):
         await self._broadcast_json({"type": "panel_update", "data": data})  # <-- 正确：有下划线
 
+    async def broadcast_event_log(self, data: list):
+        await self._broadcast_json({"type": "event_log_update", "data": data})
+
+
     async def _broadcast_json(self, json_message: dict):
         disconnected = set()
 
@@ -212,7 +220,7 @@ game_loop_task: asyncio.Task | None = None
 
 
 # --- 3. 游戏循环 (已修改以支持日志记录) ---
-async def run_llm_game_loop():
+async def run_llm_game_loop(config: dict | None = None):
     global game_loop_task
 
     # (新) 创建日志收集器实例
@@ -240,6 +248,24 @@ async def run_llm_game_loop():
     async def god_panel_update(data: dict):
         await manager.broadcast_panel_data(data)
 
+    async def god_event_log_update(data: list):
+        await manager.broadcast_event_log(data)
+
+    # (新) 读取并应用来自前端的配置覆盖
+    try:
+        if isinstance(config, dict):
+            ic = config.get("initial_chips")
+            dt = config.get("desperation_threshold")
+            if isinstance(ic, int) and ic > 0:
+                game_rules.GameConfig.initial_chips = ic
+            # 记录阈值以传入控制器
+            despair_threshold = dt if isinstance(dt, int) and dt > 0 else 1000
+        else:
+            despair_threshold = 1000
+    except Exception:
+        # 若解析失败，回退到默认值
+        despair_threshold = 1000
+
     # --- (新) 2. 随机打乱玩家顺序 ---
     shuffled_configs = player_configs.copy()
     random.shuffle(shuffled_configs)
@@ -253,7 +279,9 @@ async def run_llm_game_loop():
         god_print_callback=god_print_and_broadcast,
         god_stream_start_callback=god_stream_start,
         god_stream_chunk_callback=god_stream_chunk,
-        god_panel_update_callback=god_panel_update
+        god_panel_update_callback=god_panel_update,
+        god_event_log_update_callback=god_event_log_update,
+        despair_threshold=despair_threshold
     )
 
     try:
@@ -321,7 +349,8 @@ async def websocket_endpoint(ws: WebSocket):
                 if game_loop_task is None or game_loop_task.done():
                     await manager.broadcast_log("上帝点击了【开始游戏】...")
                     await manager.broadcast_status(running=True)
-                    game_loop_task = asyncio.create_task(run_llm_game_loop())
+                    # (新) 将前端传入的配置转发到游戏循环
+                    game_loop_task = asyncio.create_task(run_llm_game_loop(config=data.get("config")))
                 else:
                     await ws.send_json({"type": "log", "message": "游戏已在运行中。"})
 

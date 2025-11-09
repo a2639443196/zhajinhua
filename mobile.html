@@ -321,6 +321,15 @@
             <div class="status-label">当前连接状态</div>
             <div class="status-value" id="status">正在连接到服务器...</div>
         </div>
+        <!-- 新增：游戏参数输入 -->
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+            <input id="m-input-initial-chips" type="number" min="1" step="1" value="2000"
+                   title="初始筹码" placeholder="初始筹码"
+                   style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color: var(--text-primary);" />
+            <input id="m-input-desperation-threshold" type="number" min="1" step="1" value="1000"
+                   title="绝境阈值" placeholder="绝境阈值"
+                   style="padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color: var(--text-primary);" />
+        </div>
         <div class="controls">
             <button id="start-button" class="control-button">连接中...</button>
             <button id="stop-button" class="control-button stop" disabled>停止</button>
@@ -443,7 +452,18 @@
 
     startButton.onclick = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({type: "START_GAME"}));
+            const initialChipsEl = document.getElementById("m-input-initial-chips");
+            const desperationThresholdEl = document.getElementById("m-input-desperation-threshold");
+            const initialChips = parseInt(initialChipsEl?.value ?? "2000", 10);
+            const desperationThreshold = parseInt(desperationThresholdEl?.value ?? "1000", 10);
+            const payload = {
+                type: "START_GAME",
+                config: {
+                    initial_chips: Number.isFinite(initialChips) && initialChips > 0 ? initialChips : 2000,
+                    desperation_threshold: Number.isFinite(desperationThreshold) && desperationThreshold > 0 ? desperationThreshold : 1000,
+                }
+            };
+            ws.send(JSON.stringify(payload));
         }
     };
 
@@ -501,7 +521,9 @@
         // --- [修复 5.7 结束] ---
 
         handCountSpan.textContent = data.hand_count ?? 0;
-        potSpan.textContent = data.current_pot ?? 0;
+        const potReal = (data.current_pot_real ?? data.current_pot ?? 0);
+        const potDisplay = (data.current_pot_display ?? potReal);
+        potSpan.textContent = `伪:${potDisplay} / 真:${potReal}`;
 
         playersContainer.innerHTML = "";
 
@@ -530,7 +552,15 @@
 
             const chipsRow = document.createElement("div");
             chipsRow.className = "player-chips";
-            chipsRow.textContent = `筹码：${player.chips}`;
+            const actual = (player.actual_chips ?? player.chips);
+            chipsRow.textContent = `筹码(真)：${actual}`;
+            if (player.counterfeit_display_chips != null) {
+                const fakeSpan = document.createElement("span");
+                fakeSpan.className = "player-chips-fake";
+                fakeSpan.style.marginLeft = "6px";
+                fakeSpan.textContent = `筹码(伪)：${player.counterfeit_display_chips}`;
+                chipsRow.appendChild(fakeSpan);
+            }
 
             const expValue = Number(player.experience_value ?? 0);
 

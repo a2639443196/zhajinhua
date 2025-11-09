@@ -93,9 +93,8 @@ class ZhajinhuaGame:
 
     # (新) 增加指控成本计算
     def get_accuse_cost(self, player_id: int) -> int:
-        # 成本 = (基础跟注成本) * (指控倍率)
-        call_cost = self.get_call_cost(player_id)
-        return call_cost * self.config.accuse_cost_multiplier
+        # (调整) 指控发起无成本
+        return 0
 
     # --- (核心 Bug 修复) ---
     def available_actions(self, player: int, active_debuffs: set | None = None) -> List[Tuple[ActionType, int]]:
@@ -108,9 +107,11 @@ class ZhajinhuaGame:
         active_debuffs = active_debuffs or set()
 
         actions = []
+        # 未看牌允许闷注，但禁止直接弃牌，避免“未看牌就弃牌”的不合理行为
         if not ps.looked:
             actions.append((ActionType.LOOK, 0))
-        actions.append((ActionType.FOLD, 0))
+        else:
+            actions.append((ActionType.FOLD, 0))
 
         call_cost = self.get_call_cost(player)
         compare_cost = self.get_compare_cost(player)
@@ -142,9 +143,9 @@ class ZhajinhuaGame:
             actions.append((ActionType.COMPARE, compare_cost))
 
         # (新) 增加指控动作
-        # 必须至少有2个其他活跃玩家才能发起指控 (不含自己)
+        # 放宽为：至少有1个其他活跃玩家即可发起指控 (不含自己)
         other_active_players = [i for i in self.alive_players() if i != player and not st.players[i].all_in]
-        if can_accuse and len(other_active_players) >= 2:
+        if can_accuse and len(other_active_players) >= 1:
             actions.append((ActionType.ACCUSE, accuse_cost))
 
         # (新) 独立的 ALL_IN_SHOWDOWN 检查
