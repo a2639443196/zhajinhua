@@ -27,7 +27,7 @@ player_configs = [
 
 # --- 2. 自动关闭控制 ---
 # 是否开启无人观看自动关闭功能
-ENABLE_AUTO_SHUTDOWN = True
+ENABLE_AUTO_SHUTDOWN = False
 # 无人观看时，自动关闭游戏等待时间 (秒)
 AUTO_SHUTDOWN_TIMEOUT = 60 * 5
 # --------------------------
