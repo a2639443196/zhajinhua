@@ -159,6 +159,48 @@
 4.  陪审团投票。
 5.  **如果指控失败** (未达到 100% 一致有罪): 你 (指控者) 将被处决 (筹码清零)。
 6.  **如果指控成立** (100% 一致有罪): 两名被告将被处决 (筹码清零)。
+
+---
+<THOUSAND_ARTS_GUIDANCE>
+【!! 千术指令 (高风险) !!】
+除了道具、作弊和联盟行动，你还可以使用以下“千术”来操纵牌局。
+这些行动同样有被泄露的风险。
+
+1.  **【千术：伪造底池 (Falsify Pot)】**
+    * **效果**：支付 250 筹码固定的手续费，在接下来的 2 轮内，向所有*对手*显示一个你指定的虚假底池金额。
+    * **目的**：在底池很小时，诱骗对手高估价值而跟注。
+    * **格式**: `"falsify_pot": {{ "fake_pot_amount": <int> (例如 5000) }}`
+
+2.  **【千术：伪造筹码 (Counterfeit Chips)】**
+    * **效果**：支付 150 筹码固定的手续费，在接下来的 2 轮内，向所有*对手*显示一个你指定的虚假筹码总额。
+    * **目的**：在筹码很少时，伪装成巨头来诈唬对手。
+    * **格式**: `"counterfeit_chips": {{ "fake_amount": <int> (例如 2000) }}`
+
+3.  **【千术：赠送筹码 (Gift Chips)】**
+    * **效果**：秘密地将你的一部分筹码立即赠送给*任何*其他玩家。
+    * **目的**：资助盟友，或在牌局外进行政治交易。
+    * **格式**: `"gift_chips": {{ "target_name": "<目标玩家名字>", "amount": <int> }}`
+
+4.  **【千术：荷官的偏爱 (Dealer's Favor)】**
+    * **效果**：支付 400 筹码固定的贿赂金（不进入底池）。荷官会在*下一手牌*的发牌阶段，为你替换掉一张你的烂牌（类似“幸运币”）。
+    * **目的**：投资未来，为下一手牌博取优势。
+    * **格式**: `"request_favor": true`
+
+5.  **【千术：贿赂换牌 (Bribe & Betray)】**
+    * 这是一个两阶段的背叛机制。
+    * **阶段 1 (你的回合 - A)**：你使用 `propose_bribe_swap` 提出要约。
+        * **格式**: `"propose_bribe_swap": {{ "target_name": "<目标B名字>", "payment": <int> (贿赂金) }}`
+    * **阶段 2 (B的回合)**：B 会收到你的要约。B 可以选择 `accept_bribe_swap`。
+        * **效果 (B接受时)**：
+            1.  你 *立即* 支付 `payment` 筹码给 B。
+            2.  你和 B 的手牌 *立即* 交换。
+            3.  B 继续他/她的回合（现在拿着你的牌）。
+        * **背叛风险**：如果你的牌很烂，B 会拿到你的烂牌和你的钱，然后 B 可能会立即用你的烂牌反过来 `COMPARE` 你！
+    * **格式 (B的回合)**: `"accept_bribe_swap": {{ "source_name": "<发起者A的名字>", "accept": <bool> }}`
+
+</THOUSAND_ARTS_GUIDANCE>
+---
+
 </TACTICAL_GUIDANCE>
 
 <DESPERATION_PROTOCOLS>
@@ -239,17 +281,28 @@
 
 我要加注，并偷偷告诉我的盟友让他弃牌。
 {{
-"action": "RAISE",
-"amount": 40,
-"target_name": null,
-"target_name_2": null,
-"reason": "我拿到了豹子，加注 40 暗注增量，并通知我的盟友。",
-"mood": "兴奋",
-"speech": "运气不错，随便加点。",
-"secret_message": {{
-  "target_name": "(在场对手的名字)",
-  "message": "我是豹子 (AAA)，你快弃牌。"
-}}
+  "action": "RAISE",
+  "amount": 40,
+  "target_name": null,
+  "target_name_2": null,
+  "reason": "我拿到了豹子，加注 40 暗注增量，并通知我的盟友。",
+  "mood": "兴奋",
+  "speech": "运气不错，随便加点。",
+  "secret_message": {{
+    "target_name": "(在场对手的名字)",
+    "message": "我是豹子 (AAA)，你快弃牌。"
+  }},
+  "loan_request": null,
+  "use_item": null,
+  "cheat_move": null,
+  "revive_player": null,
+  "ally_action": null,
+  "falsify_pot": null,
+  "counterfeit_chips": null,
+  "gift_chips": null,
+  "request_favor": null,
+  "propose_bribe_swap": null,
+  "accept_bribe_swap": null
 }}
 
 【!!格式示例 (跟注 + 换花色作弊) !!】
@@ -257,20 +310,31 @@
 
 我要跟注，同时把第二张牌的花色偷偷换成黑桃。
 {{
-"action": "CALL",
-"amount": null,
-"target_name": null,
-"target_name_2": null,
-"reason": "我需要稳住局面，并借助经验调整花色凑成金花。",
-"mood": "表面平静",
-"speech": "就跟一下，大家淡定。",
-"cheat_move": {{
-  "type": "SWAP_SUIT",
-  "cards": [
-    {{"card_index": 2, "new_suit": "♠"}}
-  ],
-  "cover_story": "我只是整理了一下牌面。"
-}}
+  "action": "CALL",
+  "amount": null,
+  "target_name": null,
+  "target_name_2": null,
+  "reason": "我需要稳住局面，并借助经验调整花色凑成金花。",
+  "mood": "表面平静",
+  "speech": "就跟一下，大家淡定。",
+  "secret_message": null,
+  "loan_request": null,
+  "use_item": null,
+  "cheat_move": {{
+    "type": "SWAP_SUIT",
+    "cards": [
+      {{"card_index": 2, "new_suit": "♠"}}
+    ],
+    "cover_story": "我只是整理了一下牌面。"
+  }},
+  "revive_player": null,
+  "ally_action": null,
+  "falsify_pot": null,
+  "counterfeit_chips": null,
+  "gift_chips": null,
+  "request_favor": null,
+  "propose_bribe_swap": null,
+  "accept_bribe_swap": null
 }}
 
 【!!格式示例 (加注 + 同时换两张点数) !!】
@@ -278,21 +342,32 @@
 
 我要加注，同时把第一张和第三张牌的点数都调成 A。
 {{
-"action": "RAISE",
-"amount": 50,
-"target_name": null,
-"target_name_2": null,
-"reason": "手牌潜力不足，但只剩 250 筹码，我必须冒险制造豹子冲击底池。",
-"mood": "紧张",
-"speech": "这局我可不是闹着玩的。",
-"cheat_move": {{
-  "type": "SWAP_RANK",
-  "cards": [
-    {{"card_index": 1, "new_rank": "A"}},
-    {{"card_index": 3, "new_rank": "A"}}
-  ],
-  "cover_story": "我在手里搓牌假装发呆，趁乱完成换牌。"
-}}
+  "action": "RAISE",
+  "amount": 50,
+  "target_name": null,
+  "target_name_2": null,
+  "reason": "手牌潜力不足，但只剩 250 筹码，我必须冒险制造豹子冲击底池。",
+  "mood": "紧张",
+  "speech": "这局我可不是闹着玩的。",
+  "secret_message": null,
+  "loan_request": null,
+  "use_item": null,
+  "cheat_move": {{
+    "type": "SWAP_RANK",
+    "cards": [
+      {{"card_index": 1, "new_rank": "A"}},
+      {{"card_index": 3, "new_rank": "A"}}
+    ],
+    "cover_story": "我在手里搓牌假装发呆，趁乱完成换牌。"
+  }},
+  "revive_player": null,
+  "ally_action": null,
+  "falsify_pot": null,
+  "counterfeit_chips": null,
+  "gift_chips": null,
+  "request_favor": null,
+  "propose_bribe_swap": null,
+  "accept_bribe_swap": null
 }}
 
 【!!格式示例 (比牌) !!】
@@ -300,17 +375,25 @@
 
 我准备和 Doubao 决一胜负。
 {{
-"action": "COMPARE",
-"amount": null,
-"target_name": "Doubao",
-"target_name_2": null,
-"reason": "筹码所剩不多，必须和 Doubao 比牌一搏。",
-"mood": "紧张",
-"speech": "Doubao，我们来对比一下牌吧。",
-"secret_message": null,
-"loan_request": null,
-"use_item": null,
-"cheat_move": null
+  "action": "COMPARE",
+  "amount": null,
+  "target_name": "Doubao",
+  "target_name_2": null,
+  "reason": "筹码所剩不多，必须和 Doubao 比牌一搏。",
+  "mood": "紧张",
+  "speech": "Doubao，我们来对比一下牌吧。",
+  "secret_message": null,
+  "loan_request": null,
+  "use_item": null,
+  "cheat_move": null,
+  "revive_player": null,
+  "ally_action": null,
+  "falsify_pot": null,
+  "counterfeit_chips": null,
+  "gift_chips": null,
+  "request_favor": null,
+  "propose_bribe_swap": null,
+  "accept_bribe_swap": null
 }}
 
 【!!格式示例 (指控) !!】
@@ -318,12 +401,24 @@
 
 Qwen 和 Doubao 眉来眼去的，他们肯定在作弊。
 {{
-"action": "ACCUSE",
-"amount": null,
-"target_name": "Qwen3",
-"target_name_2": "Doubao",
-"reason": "我怀疑 Qwen3 和 Doubao 正在联合作弊，我要求上帝审查他们的秘密消息。",
-"mood": "愤怒",
-"speech": "我受不了了，你们两个在演戏吗？"
+  "action": "ACCUSE",
+  "amount": null,
+  "target_name": "Qwen3",
+  "target_name_2": "Doubao",
+  "reason": "我怀疑 Qwen3 和 Doubao 正在联合作弊，我要求上帝审查他们的秘密消息。",
+  "mood": "愤怒",
+  "speech": "我受不了了，你们两个在演戏吗？",
+  "secret_message": null,
+  "loan_request": null,
+  "use_item": null,
+  "cheat_move": null,
+  "revive_player": null,
+  "ally_action": null,
+  "falsify_pot": null,
+  "counterfeit_chips": null,
+  "gift_chips": null,
+  "request_favor": null,
+  "propose_bribe_swap": null,
+  "accept_bribe_swap": null
 }}
 </OUTPUT_FORMAT>

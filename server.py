@@ -1,6 +1,6 @@
 import asyncio
 import random  # (新) 1. 导入 random
-from typing import Set
+from typing import Set, List
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse

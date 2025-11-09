@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import List, Dict, Callable, Awaitable, Tuple, Optional, Set
 
 from zhajinhua import ZhajinhuaGame, GameConfig, Action
-from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType, PlayerState
+from game_rules import ActionType, INT_TO_RANK, SUITS, GameConfig, evaluate_hand, Card, RANK_TO_INT, HandType, \
+    PlayerState
 from player import Player
 
 BASE_DIR = Path(__file__).parent.resolve()
 ITEM_STORE_PATH = BASE_DIR / "items_store.json"
 AUCTION_PROMPT_PATH = BASE_DIR / "prompt/auction_bid_prompt.txt"
-USED_PERSONA_PATH = BASE_DIR / "used_personas.json" # <-- 📌 新增人设记录路径
+USED_PERSONA_PATH = BASE_DIR / "used_personas.json"  # <-- 📌 新增人设记录路径
+
 
 class SystemVault:
     """金库逻辑：(新) 根据经验和手牌强度评估贷款请求。"""
@@ -154,6 +156,13 @@ class GameController:
         self.LEAK_SECRET_MESSAGE_BASE = 0.20  # 密信基础泄露率
         self.LEAK_CHEAT_MOVE_BASE = 0.25  # 作弊基础泄露率
         self.LEAK_BRIBE_MOVE_BASE = 0.40  # (新) 贿赂基础泄露率 (更高)
+
+        # (↓↓ 新增此 5 行 ↓↓)
+        self.LEAK_FALSIFY_POT_BASE = 0.20
+        self.LEAK_COUNTERFEIT_CHIPS_BASE = 0.25
+        self.LEAK_GIFT_CHIPS_BASE = 0.35
+        self.LEAK_DEALER_FAVOR_BASE = 0.40
+        self.LEAK_BRIBE_SWAP_BASE = 0.40
 
         try:
             with ITEM_STORE_PATH.open("r", encoding="utf-8") as fp:
@@ -522,10 +531,19 @@ class GameController:
         else:
             data["streak"] = 0
 
-    def _apply_start_of_hand_effects(self, game: ZhajinhuaGame) -> None:
+    async def _apply_start_of_hand_effects(self, game: ZhajinhuaGame) -> None:
         for idx, ps in enumerate(game.state.players):
             if not ps.alive:
                 continue
+                # (↓↓ 新增此块 ↓↓)
+                # 检查是否有“荷官的偏爱”
+            if self._consume_effect(idx, "dealer_favor"):
+                await self.god_print(
+                    f"【千术】: {self.players[idx].name} 之前贿赂了荷官，荷官的偏爱正在生效...", 0.5
+                )
+                self._apply_luck_boost(game, idx)  # 复用幸运币的换牌逻辑
+                # (注意：如果幸运币也在，会触发两次，这没问题)
+            # (↑↑ 新增结束 ↑↑)
             self._apply_luck_boost(game, idx)
             self._apply_bad_luck_guard(game, idx)
 
@@ -1663,13 +1681,33 @@ class GameController:
         st = game.state
         ps = st.players[player_id]
 
+        # (↓↓ 新增逻辑 ↓↓)
+        # 1. 获取真实的底池
+        real_pot = st.pot
+        display_pot = real_pot  # 默认显示真实底池
+
+        # 2. 检查是否有伪造底池的效果
+        falsify_effect = next((e for e in self.active_effects if e.get("effect_id") == "falsified_pot"), None)
+
+        if falsify_effect:
+            source_id = falsify_effect.get("source_id")
+            # 3. 如果查看者不是施法者，就显示假底池
+            if source_id != player_id:
+                display_pot = falsify_effect.get("fake_pot", real_pot)
+        # (↑↑ 新增结束 ↑↑)
+
         state_summary_lines = [
             f"当前是 {self.players[st.current_player].name} 的回合。",
-            f"底池 (Pot): {st.pot}", f"当前暗注 (Base Bet): {st.current_bet}",
+            f"底池 (Pot): {display_pot}",  # (← 修改此行)
+            f"当前暗注 (Base Bet): {st.current_bet}",
             f"最后加注者: {self.players[st.last_raiser].name if st.last_raiser is not None else 'N/A'}"
         ]
+
         state_summary_lines.append("\n玩家信息:")
         player_status_list: list[str] = []
+
+        # (↓) 检查是否有伪造筹码的效果 (↓)
+        counterfeit_effect = next((e for e in self.active_effects if e.get("effect_id") == "counterfeit_chips"), None)
         for i, p in enumerate(st.players):
             p_name = self.players[i].name
             if self.persistent_chips[i] <= 0:
@@ -1682,8 +1720,21 @@ class GameController:
                 status = "已看牌"
             else:
                 status = "未看牌"
+            # (↓) 修改此逻辑块 (↓)
             visible_chips = self._get_visible_chips(player_id, i, p.chips)
+
+            # 如果查看者(player_id)不是施法者，并且目标(i)是施法者，则显示假筹码
+            if (counterfeit_effect and
+                    player_id != counterfeit_effect.get("source_id") and
+                    i == counterfeit_effect.get("source_id")):
+
+                # 确保我们不会看到 ??? (隐形符)
+                if visible_chips != "???":
+                    visible_chips = counterfeit_effect.get("display_chips", p.chips)
+
             status_line = f"  - {p_name}: 筹码={visible_chips}, 状态={status}"
+            # (↑) 修改结束 (↑)
+
             state_summary_lines.append(status_line)
             player_status_list.append(status)
 
@@ -1800,6 +1851,21 @@ class GameController:
                 secret_message_lines.append(f"  - [密信] 来自 {sender_name}: {message}")
         for message in self.player_system_messages.get(player_id, []):
             secret_message_lines.append(f"  - [系统情报]: {message}")
+
+        # (↓↓ 新增此块 ↓↓)
+        # 检查是否有待处理的贿赂换牌要约
+        for effect in self.active_effects:
+            if (effect.get("effect_id") == "bribe_swap_pending" and
+                    effect.get("target_id") == player_id):
+                source_name = self.players[effect['source_id']].name
+                payment = effect['payment']
+                secret_message_lines.append(
+                    f"  - 【!! 秘密要约 !!】: {source_name} 提出支付你 {payment} 筹码，"
+                    f"以换取你们双方的*全部手牌*。"
+                    f"请在JSON中使用 'accept_bribe_swap' 键回应。"
+                )
+        # (↑↑ 新增结束 ↑↑)
+
         received_secret_messages_str = "\n".join(secret_message_lines) if secret_message_lines else "你没有收到任何秘密消息。"
 
         min_raise_increment = st.config.min_raise
@@ -2017,21 +2083,35 @@ class GameController:
                     f"警告: {self.players[player_id].name} 试图 RAISE (成本 {total_raise_cost})，但只有 {ps.chips} 筹码。"
                 )
 
+                # !! 【BUG #F2 修复】 !!
+                # 检查 AI 是否 *同时* 提交了作弊请求。
+                # 如果 AI 正在作弊，它的意图是 All-In，我们绝不能将其降级为 CALL。
+                is_cheating_this_turn = bool(action_json.get("cheat_move"))
+
                 # 检查是否能降级为 CALL
                 # (我们必须从 available_actions 列表中确认 CALL 是否可用)
                 can_call = any(
                     name == "CALL" for name, cost in available_actions if name == "CALL" and ps.chips >= cost)
 
-                if can_call:
+                # 只有在 AI (1)能跟注 且 (2)没有作弊 的情况下，才降级为 CALL
+                if can_call and not is_cheating_this_turn:
                     # 筹码足够 Call，降级为 Call
                     self._parse_warnings.append("动作已自动降级为 CALL。")
                     action_type = ActionType.CALL
                     amount = None  # CALL 没有 amount
                 else:
-                    # 筹码不够 Call，检查是否能 All In
+                    # (情况1：AI 正在作弊，RAISE 无效 -> 修正为 ALL_IN)
+                    # (情况2：AI 没作弊，RAISE 无效，连 CALL 都不够 -> 降级为 ALL_IN)
+
+                    # 检查是否能 All In
                     can_all_in = any(name == "ALL_IN_SHOWDOWN" for name, _ in available_actions)
+
                     if can_all_in:
-                        self._parse_warnings.append("动作已自动降级为 ALL_IN_SHOWDOWN。")
+                        if is_cheating_this_turn:
+                            self._parse_warnings.append("作弊警告：RAISE 金额无效，已自动修正为 ALL_IN_SHOWDOWN。")
+                        else:
+                            self._parse_warnings.append("动作已自动降级为 ALL_IN_SHOWDOWN。")
+
                         action_type = ActionType.ALL_IN_SHOWDOWN
                         amount = None
                     else:
@@ -2689,6 +2769,306 @@ class GameController:
         result["cards"] = log_payload["cards"]
         return result
 
+    async def _handle_falsify_pot(self, game: ZhajinhuaGame, player_id: int, payload: dict):
+        """处理伪造底池的千术"""
+        COST = 250  # 固定的手续费
+        player_state = game.state.players[player_id]
+        player_name = self.players[player_id].name
+
+        fake_amount = payload.get("fake_pot_amount")
+        try:
+            fake_amount = int(fake_amount)
+        except (TypeError, ValueError):
+            await self.god_print(f"【千术失败】: {player_name} 试图伪造底池，但未提供有效的金额。", 0.5)
+            return
+
+        if player_state.chips < COST:
+            await self.god_print(f"【千术失败】: {player_name} 筹码不足 {COST} 来支付伪造底池的费用。", 0.5)
+            return
+
+        player_state.chips -= COST
+        self.persistent_chips[player_id] -= COST
+
+        # 移除旧效果（防止叠加）
+        for effect in list(self.active_effects):
+            if effect.get("effect_id") == "falsified_pot" and effect.get("source_id") == player_id:
+                self.active_effects.remove(effect)
+
+        self.active_effects.append({
+            "effect_id": "falsified_pot",
+            "effect_name": "伪造底池",
+            "source_id": player_id,
+            "fake_pot": fake_amount,
+            "turns_left": 2
+        })
+
+        await self.god_print(
+            f"【千术】: {player_name} 支付 {COST} 筹码，将底池伪造成 {fake_amount}！", 0.5
+        )
+
+        leak_msg = f"你感觉底池的数目看起来不太对劲... {player_name} 似乎在暗中动了手脚。"
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_FALSIFY_POT_BASE,
+            player_id, player_id
+        )
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
+    async def _handle_counterfeit_chips(self, game: ZhajinhuaGame, player_id: int, payload: dict):
+        """处理伪造筹码的千术"""
+        COST = 150
+        player_state = game.state.players[player_id]
+        player_name = self.players[player_id].name
+
+        fake_amount = payload.get("fake_amount")
+        try:
+            fake_amount = int(fake_amount)
+        except (TypeError, ValueError):
+            await self.god_print(f"【千术失败】: {player_name} 试图伪造筹码，但未提供有效的金额。", 0.5)
+            return
+
+        if player_state.chips < COST:
+            await self.god_print(f"【千术失败】: {player_name} 筹码不足 {COST} 来支付伪造筹码的费用。", 0.5)
+            return
+
+        player_state.chips -= COST
+        self.persistent_chips[player_id] -= COST
+
+        # 移除旧效果
+        for effect in list(self.active_effects):
+            if effect.get("effect_id") == "counterfeit_chips" and effect.get("source_id") == player_id:
+                self.active_effects.remove(effect)
+
+        self.active_effects.append({
+            "effect_id": "counterfeit_chips",
+            "effect_name": "伪造筹码",
+            "source_id": player_id,
+            "display_chips": fake_amount,
+            "turns_left": 2
+        })
+
+        await self.god_print(
+            f"【千术】: {player_name} 支付 {COST} 筹码，将自己的筹码伪造成 {fake_amount}！", 0.5
+        )
+
+        leak_msg = f"你注意到 {player_name} 的筹码堆看起来有点不对劲，似乎比他/她应有的要多..."
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_COUNTERFEIT_CHIPS_BASE,
+            player_id, player_id
+        )
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
+    async def _handle_gift_chips(self, game: ZhajinhuaGame, player_id: int, payload: dict):
+        """处理赠送筹码的千术"""
+        player_state = game.state.players[player_id]
+        player_name = self.players[player_id].name
+
+        target_name = payload.get("target_name")
+        target_id = self._find_player_by_name(target_name)
+
+        try:
+            amount = int(payload.get("amount", 0))
+        except (TypeError, ValueError):
+            amount = 0
+
+        if target_id is None or not self.players[target_id].alive or not game.state.players[target_id].alive:
+            await self.god_print(f"【千术失败】: {player_name} 试图赠送筹码给无效或已淘汰的目标: {target_name}", 0.5)
+            return
+
+        if amount <= 0:
+            await self.god_print(f"【千术失败】: {player_name} 试图赠送无效的筹码金额。", 0.5)
+            return
+
+        if player_state.chips < amount:
+            await self.god_print(f"【千术失败】: {player_name} 筹码不足 {amount} 来赠送。", 0.5)
+            return
+
+        # 执行转移
+        player_state.chips -= amount
+        self.persistent_chips[player_id] -= amount
+        game.state.players[target_id].chips += amount
+        self.persistent_chips[target_id] += amount
+        target_name = self.players[target_id].name
+
+        await self.god_print(
+            f"【秘密交易】: {player_name} 偷偷赠送了 {amount} 筹码给 {target_name}！", 0.5
+        )
+
+        self._append_system_message(player_id, f"你成功赠送了 {amount} 筹码给 {target_name}。")
+        self._append_system_message(target_id, f"【!! 秘密收入 !!】: {player_name} 刚刚赠送了你 {amount} 筹码！")
+
+        leak_msg = f"你似乎看到 {player_name} 和 {target_name} 之间有筹码在桌下传递..."
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_GIFT_CHIPS_BASE,
+            player_id, player_id, target_id
+        )
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
+    async def _handle_dealer_favor(self, game: ZhajinhuaGame, player_id: int):
+        """处理贿赂荷官以求偏爱"""
+        COST = 400
+        player_state = game.state.players[player_id]
+        player_name = self.players[player_id].name
+
+        if player_state.chips < COST:
+            await self.god_print(f"【千术失败】: {player_name} 筹码不足 {COST} 来贿赂荷官。", 0.5)
+            return
+
+        # 检查是否已有此效果，防止重复购买
+        if self._player_has_effect(player_id, "dealer_favor"):
+            await self.god_print(f"【千术失败】: {player_name} 已经购买过荷官的偏爱了。", 0.5)
+            return
+
+        player_state.chips -= COST
+        self.persistent_chips[player_id] -= COST
+
+        self.active_effects.append({
+            "effect_id": "dealer_favor",
+            "effect_name": "荷官的偏爱",
+            "target_id": player_id,
+            "turns_left": 1  # 仅在下一手牌开始时生效
+        })
+
+        await self.god_print(
+            f"【千术】: {player_name} 支付 {COST} 筹码贿赂了荷官，以求在*下一手牌*获得好运！", 0.5
+        )
+
+        leak_msg = f"你注意到 {player_name} 趁荷官发牌时，往荷官手里塞了些筹码..."
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_DEALER_FAVOR_BASE,
+            player_id, player_id
+        )
+        await self.god_panel_update(self._build_panel_data(game, -1))
+
+    async def _handle_propose_bribe_swap(self, game: ZhajinhuaGame, player_id: int, payload: dict):
+        """处理发起贿赂换牌要约"""
+        player_state = game.state.players[player_id]
+        player_name = self.players[player_id].name
+
+        target_name = payload.get("target_name")
+        target_id = self._find_player_by_name(target_name)
+        payment = int(payload.get("payment", 0))
+
+        if target_id is None or not self.players[target_id].alive or not game.state.players[target_id].alive:
+            await self.god_print(f"【千术失败】: {player_name} 试图贿赂无效的目标: {target_name}", 0.5)
+            return
+
+        if payment <= 0:
+            await self.god_print(f"【千术失败】: {player_name} 试图用 0 筹码贿赂，要约无效。", 0.5)
+            return
+
+        if player_state.chips < payment:
+            await self.god_print(f"【千术失败】: {player_name} 筹码不足 {payment} 来支付贿赂。", 0.5)
+            return
+
+        # 移除旧的待处理要约 (防止刷屏)
+        for effect in list(self.active_effects):
+            if effect.get("effect_id") == "bribe_swap_pending" and effect.get("source_id") == player_id:
+                self.active_effects.remove(effect)
+
+        self.active_effects.append({
+            "effect_id": "bribe_swap_pending",
+            "source_id": player_id,
+            "target_id": target_id,
+            "action": "SWAP_HANDS",
+            "payment": payment,
+            "turns_left": 1  # 只在对方的下一个回合有效
+        })
+
+        await self.god_print(f"【千术】: {player_name} 正在向 {target_name} 提出 {payment} 筹码的“换牌贿赂”...", 0.5)
+
+        leak_msg = f"你似乎看到 {player_name} 鬼鬼祟祟地向 {target_name} 递了张纸条..."
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_BRIBE_SWAP_BASE,
+            player_id, player_id, target_id
+        )
+
+    async def _handle_accept_bribe_swap(self, game: ZhajinhuaGame, player_id: int, payload: dict) -> dict | None:
+        """处理接受或拒绝贿赂换牌要约"""
+        player_state = game.state.players[player_id]  # 接受者 (B)
+        player_name = self.players[player_id].name
+
+        source_name = payload.get("source_name")
+        source_id = self._find_player_by_name(source_name)
+        accept = payload.get("accept", False)
+
+        offer_effect = None
+        for effect in self.active_effects:
+            if (effect.get("effect_id") == "bribe_swap_pending" and
+                    effect.get("target_id") == player_id and
+                    effect.get("source_id") == source_id):
+                offer_effect = effect
+                break
+
+        if offer_effect is None:
+            await self.god_print(f"【千术失败】: {player_name} 试图回应一个不存在或已过期的贿赂要约。", 0.5)
+            return None
+
+        self.active_effects.remove(offer_effect)
+
+        if not accept:
+            await self.god_print(f"【千术】: {player_name} 拒绝了 {source_name} 的换牌贿赂。", 0.5)
+            self._append_system_message(source_id, f"【!! 要约被拒 !!】: {player_name} 拒绝了你的换牌要约。")
+            return None
+
+        # --- 接受贿赂 ---
+        payment = offer_effect['payment']
+        action = offer_effect['action']  # 总是 "SWAP_HANDS"
+
+        if source_id is None or not self.players[source_id].alive or not game.state.players[source_id].alive:
+            await self.god_print(f"【千术失败】: {player_name} 接受了贿赂，但 {source_name} 已不在场！", 0.5)
+            return None
+
+        source_state = game.state.players[source_id]  # 付款人 (A)
+
+        if source_state.chips < payment:
+            await self.god_print(
+                f"【千术失败】: {player_name} 接受了贿赂，但 {source_name} 已经没有足够的筹码 ({payment}) 支付！", 0.5)
+            self._append_system_message(source_id,
+                                        f"【!! 支付失败 !!】: {player_name} 接受了你的要约，但你已无力支付 {payment}！")
+            return None
+
+        # 1. 转移筹码
+        source_state.chips -= payment
+        self.persistent_chips[source_id] -= payment
+        player_state.chips += payment
+        self.persistent_chips[player_id] += payment
+
+        await self.god_print(
+            f"【贿赂成功】: {player_name} 接受了 {source_name} 的 {payment} 筹码！", 0.5
+        )
+        self._append_system_message(source_id, f"{player_name} 接受了你的 {payment} 筹码。")
+        self._append_system_message(player_id, f"你收到了 {source_name} 的 {payment} 筹码。")
+
+        # 2. 执行换牌 (背叛的开始)
+        p_hand = player_state.hand
+        a_hand = source_state.hand
+        player_state.hand = a_hand  # B 拿到了 A 的牌
+        source_state.hand = p_hand  # A 拿到了 B 的牌
+
+        p_hand_str = " ".join(self._format_card(c) for c in a_hand)
+        a_hand_str = " ".join(self._format_card(c) for c in p_hand)
+
+        await self.god_print(
+            f"【千术】: {player_name} 与 {source_name} 秘密交换了手牌！", 0.5
+        )
+        self._append_system_message(player_id, f"交换成功。你的新手牌 (来自 {source_name}): {p_hand_str}")
+        self._append_system_message(source_id, f"交换成功。你的新手牌 (来自 {player_name}): {a_hand_str}")
+
+        leak_msg = f"你注意到 {player_name} 和 {source_name} 之间达成了某种交易，他们交换了手牌！"
+        await self._leak_information(
+            game, leak_msg,
+            self.LEAK_GIFT_CHIPS_BASE,
+            player_id, player_id, source_id
+        )
+
+        # 强制 B 重新决策（现在 B 拿着 A 的牌）
+        return {"panel_refresh": True, "re_decide_action": True}
+
     async def _handle_accusation(self, game: ZhajinhuaGame, action: Action, start_player_id: int) -> bool:
         # ... (此函数无修改) ...
         accuser_id = action.player
@@ -2914,7 +3294,7 @@ class GameController:
         await self._check_loan_repayments(game)
 
         self._record_hand_start_state(game)
-        self._apply_start_of_hand_effects(game)
+        await self._apply_start_of_hand_effects(game)  # <-- 在此添加 await
 
         self.player_observed_moods.clear()
         self.player_last_speech.clear()
@@ -3026,6 +3406,46 @@ class GameController:
             secret_message_json = action_json.get("secret_message")
             if secret_message_json:
                 await self._handle_secret_message(game, current_player_idx, secret_message_json)
+
+            # (↓↓ 新增此处的 6 个处理器 ↓↓)
+            # 1. (必须最先) 处理“接受贿赂”
+            accept_bribe_payload = action_json.get("accept_bribe_swap")
+            if accept_bribe_payload:
+                bribe_result = await self._handle_accept_bribe_swap(game, current_player_idx, accept_bribe_payload)
+                if bribe_result and bribe_result.get("re_decide_action"):
+                    await self.god_panel_update(self._build_panel_data(game, start_player_id))
+                    await self.god_print(
+                        f"【系统提示】: {current_player_obj.name} 接受了贿赂并交换了手牌，请重新决策...", 0.5)
+                    continue  # 强制重新决策
+
+            # 2. (必须在 accept 之后) 处理“发起贿赂”
+            propose_bribe_payload = action_json.get("propose_bribe_swap")
+            if propose_bribe_payload:
+                await self._handle_propose_bribe_swap(game, current_player_idx, propose_bribe_payload)
+
+            # 3. 处理“赠送筹码”
+            gift_payload = action_json.get("gift_chips")
+            if gift_payload:
+                await self._handle_gift_chips(game, current_player_idx, gift_payload)
+
+            # 4. 处理“伪造底池”
+            falsify_payload = action_json.get("falsify_pot")
+            if falsify_payload:
+                await self._handle_falsify_pot(game, current_player_idx, falsify_payload)
+
+            # 5. 处理“伪造筹码”
+            counterfeit_payload = action_json.get("counterfeit_chips")
+            if counterfeit_payload:
+                await self._handle_counterfeit_chips(game, current_player_idx, counterfeit_payload)
+
+            # 6. 处理“荷官的偏爱”
+            favor_payload = action_json.get("request_favor")
+            if favor_payload:
+                # 检查是否为布尔值true
+                if isinstance(favor_payload, bool) and favor_payload:
+                    await self._handle_dealer_favor(game, current_player_idx)
+
+            # (↑↑ 新增结束 ↑↑)
 
             item_to_use = action_json.get("use_item")
             re_decide = False  # <-- 📌 新增：定义 re_decide 标志
