@@ -640,6 +640,7 @@ class Player:
                      accuser_name: str,
                      partner_name: str,
                      evidence_log: str,
+                     my_persona: str,  # (新) 添加人设参数
                      stream_start_cb: Callable[[str], Awaitable[None]],
                      stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
 
@@ -652,7 +653,8 @@ class Player:
             self_name=self.name,
             accuser_name=accuser_name,
             partner_name=partner_name,
-            evidence_log=evidence_log
+            evidence_log=evidence_log,
+            my_persona=my_persona  # (新) 添加人设
         )
         messages = [{"role": "user", "content": prompt}]
 
@@ -678,6 +680,7 @@ class Player:
                    evidence_log: str,
                    defense_speech_1: str,
                    defense_speech_2: str,
+                   my_persona: str,  # (新) 添加人设参数
                    stream_start_cb: Callable[[str], Awaitable[None]],
                    stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
 
@@ -693,7 +696,8 @@ class Player:
             target_name_2=target_name_2,
             evidence_log=evidence_log,
             defense_speech_1=defense_speech_1,
-            defense_speech_2=defense_speech_2
+            defense_speech_2=defense_speech_2,
+            my_persona=my_persona  # (新) 添加人设
         )
         messages = [{"role": "user", "content": prompt}]
 

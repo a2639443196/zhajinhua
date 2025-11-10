@@ -17,7 +17,13 @@
 
 【你的背包 (Inventory)】
 {player_inventory}
-（当前道具系统暂时禁用，请勿输出 use_item）
+
+**重要提示：道具系统已启用！**
+- 你可以查看背包中的道具及其效果描述
+- **主动道具**需要在使用时通过 `use_item` 字段指定，格式：`{{"item_id": "ITM_XXX", ...}}`
+- **被动道具**会自动在满足条件时触发，无需主动使用
+- 使用主动道具后，道具会从背包中移除
+- 每项道具在背包中只能存在一件
 </MY_STATUS>
 
 <TABLE_STATUS>
@@ -148,7 +154,19 @@
 
 ---
 【战术提示：使用道具】
-（当前版本已禁用道具系统与拍卖，请勿输出 use_item）
+**道具系统已启用！** 你可以在决策时使用 `use_item` 字段来使用主动道具。
+
+**主动道具使用规则：**
+- 查看你的背包，了解每个道具的效果和使用方式
+- 在JSON决策中添加 `"use_item"` 字段，格式：`{{"item_id": "ITM_XXX", ...}}`
+- 不同道具可能需要不同的参数（如目标玩家、牌索引等），请根据道具描述填写
+- 使用后道具会从背包中移除
+- **被动道具**无需主动使用，会在满足条件时自动触发
+
+**道具使用示例：**
+- 使用换牌卡：`{{"use_item": {{"item_id": "ITM_001", "card_index": 1}}}}`
+- 使用偷看卡：`{{"use_item": {{"item_id": "ITM_006"}}}}`（自动随机选择目标）
+- 使用反转卡：`{{"use_item": {{"item_id": "ITM_011"}}}}`（等待下一次比牌时触发）
 
 ---
 【战术提示：换牌作弊 (cheat_move)】
@@ -300,6 +318,7 @@
 - **如果你选择 "ACCUSE"**：你 *必须* 提供 "target_name" (被指控者1) 和 "target_name_2" (被指控者2)。
 - **如果你想发送 "secret_message"**：你 *必须* 提供 "target_name" 和 "message"。
 - **如果你尝试进行换牌作弊**：你必须提供 `"cheat_move"` 字段 (见战术提示)。
+- **如果你想使用主动道具**：你可以提供 `"use_item"` 字段，格式：`{{"item_id": "ITM_XXX", ...}}`（具体参数根据道具类型而定，详见背包中的道具描述）。
 
 **【!! 战术提示：贿赂 (Bribery) !!】**
 如果你在作弊 (`cheat_move`) 时被当场抓获，游戏将暂停，你会获得一个**最后的机会**。
@@ -330,6 +349,7 @@
   "loan_request": null,
   "repay_loan": null,
   "cheat_move": null,
+  "use_item": null,
   "revive_player": null,
   "ally_action": null,
   "falsify_pot": null,
@@ -468,6 +488,7 @@
   "loan_request": null,
   "repay_loan": null,
   "cheat_move": null,
+  "use_item": null,
   "revive_player": null,
   "ally_action": null,
   "falsify_pot": null,
@@ -494,6 +515,7 @@
   "loan_request": null,
   "repay_loan": null,
   "cheat_move": null,
+  "use_item": null,
   "revive_player": null,
   "ally_action": null,
   "falsify_pot": null,
@@ -517,6 +539,7 @@
   "loan_request": null,
   "repay_loan": null,
   "cheat_move": null,
+  "use_item": null,
   "revive_player": null,
   "ally_action": null,
   "falsify_pot": null,

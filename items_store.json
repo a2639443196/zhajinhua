@@ -2,169 +2,144 @@
   "ITM_001": {
     "name": "换牌卡",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 800,
-    "description": "允许你在发牌后更换一张手牌，适合微调边缘牌力。",
-    "auction_weight": 10
-  },
-  "ITM_002": {
-    "name": "窥牌镜",
-    "type": "functional",
-    "cost_estimate": 1200,
-    "description": "可短暂查看一名对手的一张暗牌 (需指定目标与可选牌位)。",
-    "auction_weight": 8
-  },
-  "ITM_003": {
-    "name": "锁筹卡",
-    "type": "functional",
-    "cost_estimate": 1500,
-    "description": "暂时禁止一名对手在其下一次行动中执行 RAISE。",
-    "auction_weight": 6
+    "description": "【主动】允许你在发牌后更换一张手牌可指定要更换的手牌点数和花色，适合微调边缘牌力。使用后，在发牌阶段等待触发条件：当发牌完成时，可指定要更换的手牌点数和花色进行更换。触发后移除。",
+    "auction_weight": 10,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_004": {
     "name": "双倍卡",
     "type": "functional",
+    "usage_type": "passive",
     "cost_estimate": 2000,
-    "description": "本局若获胜，自动额外获取等同于底池的系统奖金。",
-    "auction_weight": 4
+    "description": "【被动】本局若获胜，自动额外获取等同于底池的系统奖金。在背包中自动检测：当本局获胜时自动触发，获取等同于底池的系统奖金，触发后移除。",
+    "auction_weight": 4,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_005": {
     "name": "免死金牌",
     "type": "functional",
+    "usage_type": "passive",
     "cost_estimate": 2800,
-    "description": "【被动】当你在手牌结束时因任何原因（作弊、贷款、指控、输光）被淘汰时，此道具自动消耗，使你以 300 筹码复活。",
-    "auction_weight": 2
+    "description": "【被动】当你在手牌结束时因任何原因（作弊、贷款、指控、输光）被淘汰时，此道具自动消耗，使你以 300 筹码复活。在背包中自动检测：当因任何原因被淘汰时自动触发，以 300 筹码复活，触发后移除。",
+    "auction_weight": 2,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_006": {
     "name": "偷看卡",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 1000,
-    "description": "随机窥看一名对手任意一张手牌，存在被防御道具拦截的风险。",
-    "auction_weight": 9
+    "description": "【主动】随机窥看一名对手整副手牌。使用后，等待触发条件：在任意行动阶段，随机选择一名对手并窥看其整副手牌。触发后移除。",
+    "auction_weight": 9,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_007": {
     "name": "调牌符",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 1600,
-    "description": "将自己的三张手牌重新洗发一次，重建整副命运。",
-    "auction_weight": 5
-  },
-  "ITM_008": {
-    "name": "顺手换牌",
-    "type": "functional",
-    "cost_estimate": 1800,
-    "description": "交换自己与指定玩家的一张手牌，可自选或随机。",
-    "auction_weight": 4
-  },
-  "ITM_009": {
-    "name": "免比符",
-    "type": "functional",
-    "cost_estimate": 1500,
-    "description": "本局被点名比牌时可拒绝一次，对手投入的比牌成本作废。",
-    "auction_weight": 6
-  },
-  "ITM_010": {
-    "name": "全开卡",
-    "type": "functional",
-    "cost_estimate": 2200,
-    "description": "立即强制所有仍在局内的玩家亮出手牌。",
-    "auction_weight": 2
+    "description": "【主动】将自己的三张手牌重新洗发一次，重建整副命运。使用后，等待触发条件：在发牌完成后，将自己的三张手牌重新洗牌并重新发牌。触发后移除。",
+    "auction_weight": 5,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_011": {
     "name": "反转卡",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 2100,
-    "description": "使自己参与的下一次比牌结果取反 (输变赢、赢变输)。",
-    "auction_weight": 3
+    "description": "【主动】使自己参与的下一次比牌结果取反 (输变赢、赢变输)。使用后，等待触发条件：当参与下一次比牌时，比牌结果自动取反。触发后移除。",
+    "auction_weight": 3,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_012": {
     "name": "压注加倍符",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 1900,
-    "description": "立即完成一次跟注，并强制下一名行动玩家至少加倍下注。",
-    "auction_weight": 4
+    "description": "【主动】立即完成一次跟注，并强制下一名行动玩家至少加倍下注。使用后立即触发：完成一次跟注，并强制下一名行动玩家至少加倍下注。触发后移除。",
+    "auction_weight": 4,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_013": {
     "name": "定输免赔",
     "type": "functional",
+    "usage_type": "passive",
     "cost_estimate": 900,
-    "description": "若本手落败，可退回一半底注 (向上取整，最低 20)。",
-    "auction_weight": 9
+    "description": "【被动】若本手落败，可退回一半底注 (向上取整，最低 20)。在背包中自动检测：当本手落败时自动触发，退回一半底注（向上取整，最低 20），触发后移除。",
+    "auction_weight": 9,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_014": {
     "name": "重发令",
     "type": "functional",
+    "usage_type": "active",
     "cost_estimate": 2600,
-    "description": "立即取消当前牌局并重新发牌，所有行动重置。",
-    "auction_weight": 2
-  },
-  "ITM_015": {
-    "name": "护身符",
-    "type": "defense",
-    "cost_estimate": 1400,
-    "description": "使自己两轮内不被指定为比牌目标。",
-    "auction_weight": 7
-  },
-  "ITM_016": {
-    "name": "反侦测烟雾",
-    "type": "defense",
-    "cost_estimate": 1100,
-    "description": "一轮内使所有窥探类道具对你失效。",
-    "auction_weight": 8
-  },
-  "ITM_017": {
-    "name": "屏蔽卡",
-    "type": "defense",
-    "cost_estimate": 1300,
-    "description": "两轮内不受任何窥探类道具影响。",
-    "auction_weight": 7
-  },
-  "ITM_018": {
-    "name": "隐形符",
-    "type": "defense",
-    "cost_estimate": 800,
-    "description": "暂时隐藏自己的筹码数量，让对手无法掌握筹码信息。",
-    "auction_weight": 10
-  },
-  "ITM_019": {
-    "name": "护运珠",
-    "type": "defense",
-    "cost_estimate": 1700,
-    "description": "未来三手中若连续拿到烂牌，将强制重发以打断霉运。",
-    "auction_weight": 4
-  },
-  "ITM_020": {
-    "name": "护牌罩",
-    "type": "defense",
-    "cost_estimate": 2000,
-    "description": "被比牌判负时自动改判为平局，仅能抵消一次。",
-    "auction_weight": 3
-  },
-  "ITM_021": {
-    "name": "反窥镜",
-    "type": "defense",
-    "cost_estimate": 1600,
-    "description": "有人窥探你时将其反弹并公开对方身份。",
-    "auction_weight": 5
+    "description": "【主动】立即取消当前牌局并重新发牌，所有行动重置。使用后立即触发：取消当前牌局并重新发牌，所有行动重置。触发后移除。",
+    "auction_weight": 2,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_022": {
     "name": "幸运币",
     "type": "buff",
+    "usage_type": "active",
     "cost_estimate": 1500,
-    "description": "使用后下一手起牌时，系统会尝试为你调优一张弱牌。",
-    "auction_weight": 6
+    "description": "【主动】使用后下一手起牌时，系统会为你调优手牌。使用后，等待触发条件：在下一手起牌时，系统自动调优手牌。触发后移除。",
+    "auction_weight": 6,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   },
   "ITM_023": {
     "name": "财神符",
     "type": "buff",
+    "usage_type": "passive",
     "cost_estimate": 1800,
-    "description": "未来三局内，只要赢牌就能额外获得系统奖金。",
-    "auction_weight": 5
-  },
-  "ITM_024": {
-    "name": "连胜加成",
-    "type": "buff",
-    "cost_estimate": 2000,
-    "description": "记录你的连胜，当连赢三局时再额外获得一份底池。",
-    "auction_weight": 4
+    "description": "【被动】未来三局内，只要赢牌就能额外获得系统奖金。在背包中自动检测：未来三局内，当赢牌时自动触发，额外获得系统奖金。触发三次后移除。",
+    "auction_weight": 5,
+    "can_be_reward": true,
+    "reward_type": {
+      "loser": "random",
+      "winner": "choice"
+    }
   }
 }
