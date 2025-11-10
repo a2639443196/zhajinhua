@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 from fastapi.responses import FileResponse, JSONResponse
 import os
+import json
 
 # --- (结束) ---
 # --- 1. LLM 玩家配置 (无修改) ---
@@ -164,7 +165,6 @@ class ConnectionManager:
 
     async def broadcast_event_log(self, data: list):
         await self._broadcast_json({"type": "event_log_update", "data": data})
-
 
     async def _broadcast_json(self, json_message: dict):
         disconnected = set()
@@ -371,6 +371,35 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 if __name__ == "__main__":
+    # (新) 定义人设文件路径和行数限制
+    BASE_DIR = Path(__file__).parent.resolve()
+    PERSONA_FILE_PATH = BASE_DIR / "used_personas.json"
+    LINE_LIMIT = 300  # 你期望的N行
+
+    # (新) 检测人设文件内容是否超过N行，超过则清空
+    try:
+        if PERSONA_FILE_PATH.exists():
+            # 读取文件并计算行数
+            with PERSONA_FILE_PATH.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            if len(lines) > LINE_LIMIT:
+                print(f"【系统】: 人设文件 '{PERSONA_FILE_PATH.name}' (共 {len(lines)} 行) 超过 {LINE_LIMIT} 行限制，正在清空...")
+
+                # 清空文件并写入一个空的 JSON 列表 "[]"
+                # 这确保了 GameController 在读取时不会因空文件而报错
+                with PERSONA_FILE_PATH.open("w", encoding="utf-8") as f:
+                    f.write("[]")
+
+                print(f"【系统】: 人设文件已清空。")
+        else:
+            # 文件不存在，GameController 内部有处理逻辑，此处无需操作
+            pass
+
+    except Exception as e:
+        print(f"【系统】: !! 启动时检测人设文件出错: {e} !!")
+
+    # (原有的启动代码)
     print("服务器已启动。请在浏览器中打开 http://127.0.0.1:9900 观战")
     print("打开页面后，请点击“开始游戏”按钮。")
     uvicorn.run(app, host="0.0.0.0", port=9900)
