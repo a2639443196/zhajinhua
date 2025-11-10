@@ -116,6 +116,15 @@
       "provider": "DeepSeek",
       "enabled": true,
       "selected": false
+    },
+    {
+      "id": "zai-org/GLM-4.6",
+      "name": "GLM-4.6",
+      "display_name": "GLM 4.6",
+      "description": "智谱 AI 最新一代通用语言模型",
+      "provider": "Zhipu AI",
+      "enabled": true,
+      "selected": false
     }
   ],
   "settings": {
