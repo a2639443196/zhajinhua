@@ -529,13 +529,575 @@
                 text-align: center;
             }
         }
+
+        /* 配置弹窗样式 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--card-color);
+            border-radius: 22px;
+            padding: 32px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 18px 36px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 6px;
+            transition: background-color 0.2s ease, color 0.2s ease;
+        }
+
+        .modal-close:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .config-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .form-label {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+
+        .form-input {
+            padding: 12px 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: border-color 0.2s ease, background-color 0.2s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .form-help {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+            flex-wrap: wrap;
+        }
+
+        .form-button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            flex: 1;
+            min-width: 120px;
+        }
+
+        .form-button.primary {
+            background: linear-gradient(145deg, rgba(76, 175, 239, 0.9), rgba(0, 149, 218, 0.82));
+            color: white;
+        }
+
+        .form-button.primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(76, 175, 239, 0.3);
+        }
+
+        .form-button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .form-button.secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .form-button.danger {
+            background: linear-gradient(145deg, rgba(255, 83, 112, 0.9), rgba(255, 105, 135, 0.8));
+            color: white;
+        }
+
+        .form-button.danger:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(255, 83, 112, 0.3);
+        }
+
+        .config-message {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            display: none;
+            font-size: 0.9rem;
+        }
+
+        .config-message.show {
+            display: block;
+        }
+
+        .config-message.success {
+            background: rgba(102, 255, 166, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(102, 255, 166, 0.3);
+        }
+
+        .config-message.error {
+            background: rgba(255, 83, 112, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(255, 83, 112, 0.3);
+        }
+
+        .current-config-display {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .current-config-title {
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--accent);
+            font-size: 0.95rem;
+        }
+
+        .current-config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 0.9rem;
+        }
+
+        .current-config-item strong {
+            color: var(--text-secondary);
+        }
+
+        .current-config-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        /* 变量修改弹窗特定样式 */
+        .variables-modal .modal-content {
+            max-width: 800px;
+        }
+
+        .variables-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .variable-category {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .category-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .variable-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 16px;
+        }
+
+        .variable-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .variable-label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .variable-key {
+            font-family: 'Courier New', monospace;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--accent-strong);
+        }
+
+        .variable-input {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            transition: border-color 0.2s ease, background-color 0.2s ease;
+        }
+
+        .variable-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .variable-input[type="text"] {
+            font-family: 'Courier New', monospace;
+        }
+
+        .variable-help {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            line-height: 1.3;
+        }
+
+        .variables-actions {
+            display: flex;
+            gap: 12px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            flex-wrap: wrap;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .status-indicator.success {
+            background: rgba(102, 255, 166, 0.1);
+            color: var(--success);
+        }
+
+        .status-indicator.error {
+            background: rgba(255, 83, 112, 0.1);
+            color: var(--danger);
+        }
+
+        /* 移动端适配 */
+        @media (max-width: 768px) {
+            .modal-content {
+                margin: 20px;
+                padding: 24px;
+                width: calc(100% - 40px);
+            }
+
+            .form-actions {
+                flex-direction: column;
+            }
+
+            .form-button {
+                width: 100%;
+            }
+
+            .variables-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* 模型选择弹窗样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background: var(--card-color);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 30px;
+            margin: 3% auto;
+            width: min(900px, 90%);
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin: 0;
+        }
+
+        .close-button {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 8px;
+            transition: background-color 0.2s ease;
+        }
+
+        .close-button:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .models-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 25px;
+        }
+
+        .model-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 18px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .model-item:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .model-item.selected {
+            background: rgba(76, 175, 239, 0.15);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(76, 175, 239, 0.3);
+        }
+
+        .model-item.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .model-item.disabled:hover {
+            transform: none;
+            background: rgba(255, 255, 255, 0.03);
+            border-color: var(--border-color);
+        }
+
+        .model-checkbox {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 20px;
+            height: 20px;
+            accent-color: var(--accent);
+        }
+
+        .model-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            padding-right: 30px;
+        }
+
+        .model-id {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+
+        .model-provider {
+            display: inline-block;
+            background: rgba(76, 175, 239, 0.2);
+            color: var(--accent);
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            margin-bottom: 8px;
+        }
+
+        .model-description {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .modal-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .selection-info {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 12px;
+        }
+
+        .modal-button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.95rem;
+        }
+
+        .modal-button.primary {
+            background: linear-gradient(145deg, var(--accent), #00a8cc);
+            color: white;
+        }
+
+        .modal-button.primary:hover:not(:disabled) {
+            background: linear-gradient(145deg, var(--accent-strong), var(--accent));
+            transform: translateY(-1px);
+        }
+
+        .modal-button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .modal-button.secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .modal-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .error {
+            color: var(--danger);
+            background: rgba(255, 83, 112, 0.1);
+            border: 1px solid rgba(255, 83, 112, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            color: var(--success);
+            background: rgba(102, 255, 166, 0.1);
+            border: 1px solid rgba(102, 255, 166, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
     </style>
 </head>
 <body>
 <div class="page">
     <header>
-        <h1>LLM 锦标赛·上帝视角</h1>
-        <p>桌面端焕新界面，实时掌握每一次筹码流向</p>
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <div>
+                <h1>LLM 锦标赛·上帝视角</h1>
+                <p>桌面端焕新界面，实时掌握每一次筹码流向</p>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button id="models-button" class="control-button" onclick="openModelsModal()" style="background: linear-gradient(145deg, rgba(255, 152, 0, 0.92), rgba(255, 193, 7, 0.85));">🤖 选择模型</button>
+                <button id="variables-button" class="control-button" onclick="openVariablesModal()" style="background: linear-gradient(145deg, rgba(123, 97, 255, 0.92), rgba(166, 95, 255, 0.85));">📝 修改变量</button>
+            </div>
+        </div>
     </header>
     <main>
         <section class="card status-card">
@@ -553,6 +1115,7 @@
                 <button id="stop-button" class="control-button stop" disabled>停止游戏</button>
                 <button id="clear-button" class="control-button clear" disabled>清空日志</button>
                 <button id="export-button" class="control-button clear" disabled>导出日志</button>
+                <button id="config-button" class="control-button" onclick="openConfigModal()">⚙️ 配置</button>
             </div>
         </section>
 
@@ -599,6 +1162,283 @@
             </div>
         </section>
     </main>
+</div>
+
+<!-- 配置弹窗 -->
+<div id="config-modal" class="modal-overlay">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 class="modal-title">⚙️ 游戏参数配置</h2>
+            <button class="modal-close" onclick="closeConfigModal()">✕</button>
+        </div>
+
+        <div id="config-message" class="config-message"></div>
+
+        <div class="current-config-display">
+            <div class="current-config-title">当前配置值</div>
+            <div id="current-config-items"></div>
+        </div>
+
+        <form id="config-form" class="config-form">
+            <div class="form-group">
+                <label class="form-label" for="config-chip-warning">筹码警戒线</label>
+                <input id="config-chip-warning" class="form-input" type="number" min="100" max="1000" step="50" required>
+                <p class="form-help">低于此值将触发生存模式策略</p>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="config-chip-critical">极度危险阈值</label>
+                <input id="config-chip-critical" class="form-input" type="number" min="50" max="500" step="50" required>
+                <p class="form-help">低于此值必须采取极端行动</p>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="config-cheat-rate">基础作弊成功率 (%)</label>
+                <input id="config-cheat-rate" class="form-input" type="number" min="5" max="50" step="1" required>
+                <p class="form-help">换牌作弊的基础成功率</p>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="config-min-raise">最小加注百分比 (%)</label>
+                <input id="config-min-raise" class="form-input" type="number" min="1" max="20" step="1" required>
+                <p class="form-help">闷注的最小百分比</p>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="config-max-loan">最大贷款手数</label>
+                <input id="config-max-loan" class="form-input" type="number" min="2" max="10" step="1" required>
+                <p class="form-help">系统金库允许的最大还款手数</p>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="form-button primary">保存配置</button>
+                <button type="button" class="form-button secondary" onclick="resetToDefaults()">恢复默认</button>
+                <button type="button" class="form-button secondary" onclick="closeConfigModal()">取消</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 变量修改弹窗 -->
+<div id="variables-modal" class="modal-overlay">
+    <div class="modal-content variables-modal">
+        <div class="modal-header">
+            <h2 class="modal-title">📝 提示词变量管理</h2>
+            <button class="modal-close" onclick="closeVariablesModal()">✕</button>
+        </div>
+
+        <div id="variables-message" class="config-message"></div>
+
+        <div class="variables-grid">
+            <!-- 游戏数值变量 -->
+            <div class="variable-category">
+                <div class="category-title">
+                    <span>🎮</span>
+                    <span>游戏数值变量</span>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        筹码警戒线
+                        <span class="variable-key">CHIP_WARNING_THRESHOLD</span>
+                    </label>
+                    <input id="var-CHIP_WARNING_THRESHOLD" class="variable-input" type="number" min="100" max="2000" step="50">
+                    <p class="variable-help">低于此值将触发生存模式策略</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        极度危险阈值
+                        <span class="variable-key">CHIP_CRITICAL_THRESHOLD</span>
+                    </label>
+                    <input id="var-CHIP_CRITICAL_THRESHOLD" class="variable-input" type="number" min="50" max="1000" step="50">
+                    <p class="variable-help">低于此值必须采取极端行动</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        基础作弊成功率
+                        <span class="variable-key">BASE_CHEAT_SUCCESS_RATE</span>
+                    </label>
+                    <input id="var-BASE_CHEAT_SUCCESS_RATE" class="variable-input" type="number" min="5" max="100" step="1">
+                    <p class="variable-help">换牌作弊的基础成功率(%)</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        最小加注百分比
+                        <span class="variable-key">MIN_RAISE_PERCENTAGE</span>
+                    </label>
+                    <input id="var-MIN_RAISE_PERCENTAGE" class="variable-input" type="number" min="1" max="50" step="1">
+                    <p class="variable-help">闷注的最小百分比(%)</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        最大贷款手数
+                        <span class="variable-key">MAX_LOAN_TURNS</span>
+                    </label>
+                    <input id="var-MAX_LOAN_TURNS" class="variable-input" type="number" min="2" max="20" step="1">
+                    <p class="variable-help">系统金库允许的最大还款手数</p>
+                </div>
+            </div>
+
+            <!-- 高级设置变量 -->
+            <div class="variable-category">
+                <div class="category-title">
+                    <span>⚙️</span>
+                    <span>高级设置变量</span>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        压力倍率
+                        <span class="variable-key">PRESSURE_MULTIPLIER</span>
+                    </label>
+                    <input id="var-PRESSURE_MULTIPLIER" class="variable-input" type="number" min="0.1" max="5.0" step="0.1">
+                    <p class="variable-help">压力计算的基础倍率</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        经验衰减率
+                        <span class="variable-key">EXPERIENCE_DECAY_RATE</span>
+                    </label>
+                    <input id="var-EXPERIENCE_DECAY_RATE" class="variable-input" type="number" min="0.01" max="0.5" step="0.01">
+                    <p class="variable-help">每局经验值的衰减率</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        作弊惩罚系数
+                        <span class="variable-key">CHEAT_PENALTY_FACTOR</span>
+                    </label>
+                    <input id="var-CHEAT_PENALTY_FACTOR" class="variable-input" type="number" min="1.0" max="10.0" step="0.5">
+                    <p class="variable-help">作弊失败时的惩罚系数</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        情绪影响因子
+                        <span class="variable-key">MOOD_INFLUENCE_FACTOR</span>
+                    </label>
+                    <input id="var-MOOD_INFLUENCE_FACTOR" class="variable-input" type="number" min="0.1" max="2.0" step="0.1">
+                    <p class="variable-help">情绪状态对决策的影响程度</p>
+                </div>
+            </div>
+
+            <!-- AI行为变量 -->
+            <div class="variable-category">
+                <div class="category-title">
+                    <span>🤖</span>
+                    <span>AI行为变量</span>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        激进程度
+                        <span class="variable-key">AGGRESSIVENESS_LEVEL</span>
+                    </label>
+                    <input id="var-AGGRESSIVENESS_LEVEL" class="variable-input" type="number" min="1" max="10" step="1">
+                    <p class="variable-help">AI整体激进程度(1-10)</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        欺骗倾向
+                        <span class="variable-key">DECEPTIVENESS_TENDENCY</span>
+                    </label>
+                    <input id="var-DECEPTIVENESS_TENDENCY" class="variable-input" type="number" min="0" max="100" step="5">
+                    <p class="variable-help">AI使用欺骗策略的倾向性(%)</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        风险承受度
+                        <span class="variable-key">RISK_TOLERANCE</span>
+                    </label>
+                    <input id="var-RISK_TOLERANCE" class="variable-input" type="number" min="0.1" max="1.0" step="0.05">
+                    <p class="variable-help">AI的风险承受能力</p>
+                </div>
+            </div>
+
+            <!-- 系统控制变量 -->
+            <div class="variable-category">
+                <div class="category-title">
+                    <span>🔧</span>
+                    <span>系统控制变量</span>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        调试模式
+                        <span class="variable-key">DEBUG_MODE</span>
+                    </label>
+                    <select id="var-DEBUG_MODE" class="variable-input">
+                        <option value="false">关闭</option>
+                        <option value="true">开启</option>
+                    </select>
+                    <p class="variable-help">是否启用调试模式和详细日志</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        思考延迟(秒)
+                        <span class="variable-key">THINKING_DELAY</span>
+                    </label>
+                    <input id="var-THINKING_DELAY" class="variable-input" type="number" min="0" max="10" step="0.5">
+                    <p class="variable-help">AI每次决策的思考延迟时间</p>
+                </div>
+
+                <div class="variable-item">
+                    <label class="variable-label">
+                        自定义前缀
+                        <span class="variable-key">CUSTOM_PREFIX</span>
+                    </label>
+                    <input id="var-CUSTOM_PREFIX" class="variable-input" type="text" maxlength="50">
+                    <p class="variable-help">自定义提示词前缀文本</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="variables-actions">
+            <button type="button" class="form-button primary" onclick="saveAllVariables()">保存所有变量</button>
+            <button type="button" class="form-button secondary" onclick="resetAllVariables()">重置为默认值</button>
+            <button type="button" class="form-button secondary" onclick="exportVariables()">导出当前配置</button>
+            <button type="button" class="form-button secondary" onclick="importVariables()">导入配置</button>
+            <button type="button" class="form-button secondary" onclick="refreshVariables()">刷新变量</button>
+            <button type="button" class="form-button secondary" onclick="closeVariablesModal()">取消</button>
+        </div>
+    </div>
+</div>
+
+<!-- 模型选择弹窗 -->
+<div id="models-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 class="modal-title">🤖 选择参赛模型</h2>
+            <button class="close-button" onclick="closeModelsModal()">✕</button>
+        </div>
+
+        <div id="models-message"></div>
+
+        <div id="models-content" class="loading">
+            正在加载模型列表...
+        </div>
+
+        <div class="modal-footer">
+            <div class="selection-info">
+                <span id="selection-count">已选择 0 个模型</span> |
+                最少 <span id="min-models">2</span> 个，最多 <span id="max-models">8</span> 个
+            </div>
+            <div class="modal-buttons">
+                <button class="modal-button secondary" onclick="resetToDefaultModels()">恢复默认</button>
+                <button class="modal-button primary" id="save-models-btn" onclick="saveModelSelection()" disabled>
+                    保存选择
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -931,6 +1771,692 @@
     }
 
     connect();
+
+    // 配置弹窗相关功能
+    const defaultConfig = {
+        chip_warning_threshold: 300,
+        chip_critical_threshold: 150,
+        base_cheat_success_rate: 16,
+        min_raise_percentage: 5,
+        max_loan_turns: 6
+    };
+
+    // 打开配置弹窗
+    function openConfigModal() {
+        const modal = document.getElementById('config-modal');
+        modal.classList.add('show');
+        loadCurrentConfig();
+    }
+
+    // 关闭配置弹窗
+    function closeConfigModal() {
+        const modal = document.getElementById('config-modal');
+        modal.classList.remove('show');
+        hideConfigMessage();
+    }
+
+    // 显示配置消息
+    function showConfigMessage(message, type) {
+        const messageEl = document.getElementById('config-message');
+        messageEl.textContent = message;
+        messageEl.className = `config-message show ${type}`;
+
+        // 3秒后自动隐藏
+        setTimeout(hideConfigMessage, 3000);
+    }
+
+    // 隐藏配置消息
+    function hideConfigMessage() {
+        const messageEl = document.getElementById('config-message');
+        messageEl.className = 'config-message';
+    }
+
+    // 加载当前配置
+    async function loadCurrentConfig() {
+        try {
+            const response = await fetch('/api/config');
+            const config = await response.json();
+
+            // 更新表单值
+            document.getElementById('config-chip-warning').value = config.chip_warning_threshold;
+            document.getElementById('config-chip-critical').value = config.chip_critical_threshold;
+            document.getElementById('config-cheat-rate').value = config.base_cheat_success_rate;
+            document.getElementById('config-min-raise').value = config.min_raise_percentage || defaultConfig.min_raise_percentage;
+            document.getElementById('config-max-loan').value = config.max_loan_turns || defaultConfig.max_loan_turns;
+
+            // 更新当前配置显示
+            updateCurrentConfigDisplay(config);
+        } catch (error) {
+            console.error('加载配置失败:', error);
+            showConfigMessage('加载配置失败: ' + error.message, 'error');
+        }
+    }
+
+    // 更新当前配置显示
+    function updateCurrentConfigDisplay(config) {
+        const displayEl = document.getElementById('current-config-items');
+        displayEl.innerHTML = `
+            <div class="current-config-item">
+                <strong>筹码警戒线:</strong>
+                <span class="current-config-value">${config.chip_warning_threshold} 筹码</span>
+            </div>
+            <div class="current-config-item">
+                <strong>极度危险阈值:</strong>
+                <span class="current-config-value">${config.chip_critical_threshold} 筹码</span>
+            </div>
+            <div class="current-config-item">
+                <strong>基础作弊成功率:</strong>
+                <span class="current-config-value">${config.base_cheat_success_rate}%</span>
+            </div>
+            <div class="current-config-item">
+                <strong>最小加注百分比:</strong>
+                <span class="current-config-value">${config.min_raise_percentage || defaultConfig.min_raise_percentage}%</span>
+            </div>
+            <div class="current-config-item">
+                <strong>最大贷款手数:</strong>
+                <span class="current-config-value">${config.max_loan_turns || defaultConfig.max_loan_turns} 手</span>
+            </div>
+        `;
+    }
+
+    // 保存配置
+    async function saveConfig(formData) {
+        try {
+            const updates = [
+                { key: 'CHIP_WARNING_THRESHOLD', value: parseInt(formData.get('chip-warning')) },
+                { key: 'CHIP_CRITICAL_THRESHOLD', value: parseInt(formData.get('chip-critical')) },
+                { key: 'BASE_CHEAT_SUCCESS_RATE', value: parseInt(formData.get('cheat-rate')) },
+                { key: 'MIN_RAISE_PERCENTAGE', value: parseInt(formData.get('min-raise')) },
+                { key: 'MAX_LOAN_TURNS', value: parseInt(formData.get('max-loan')) }
+            ];
+
+            // 逐个更新变量
+            for (const update of updates) {
+                const response = await fetch('/api/prompts/variables', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(update)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`更新 ${update.key} 失败`);
+                }
+            }
+
+            showConfigMessage('配置保存成功！提示词将在下一局游戏中生效。', 'success');
+
+            // 重新加载配置显示
+            setTimeout(loadCurrentConfig, 500);
+        } catch (error) {
+            console.error('保存配置失败:', error);
+            showConfigMessage('保存失败: ' + error.message, 'error');
+        }
+    }
+
+    // 恢复默认值
+    async function resetToDefaults() {
+        if (!confirm('确定要恢复默认配置吗？')) {
+            return;
+        }
+
+        try {
+            for (const [key, value] of Object.entries({
+                'CHIP_WARNING_THRESHOLD': defaultConfig.chip_warning_threshold,
+                'CHIP_CRITICAL_THRESHOLD': defaultConfig.chip_critical_threshold,
+                'BASE_CHEAT_SUCCESS_RATE': defaultConfig.base_cheat_success_rate,
+                'MIN_RAISE_PERCENTAGE': defaultConfig.min_raise_percentage,
+                'MAX_LOAN_TURNS': defaultConfig.max_loan_turns
+            })) {
+                const response = await fetch('/api/prompts/variables', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ key, value })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`重置 ${key} 失败`);
+                }
+            }
+
+            showConfigMessage('已恢复默认配置', 'success');
+
+            // 重新加载配置
+            setTimeout(loadCurrentConfig, 500);
+        } catch (error) {
+            console.error('恢复默认失败:', error);
+            showConfigMessage('恢复失败: ' + error.message, 'error');
+        }
+    }
+
+    // 配置表单提交处理
+    document.getElementById('config-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const formData = new FormData();
+        formData.append('chip-warning', document.getElementById('config-chip-warning').value);
+        formData.append('chip-critical', document.getElementById('config-chip-critical').value);
+        formData.append('cheat-rate', document.getElementById('config-cheat-rate').value);
+        formData.append('min-raise', document.getElementById('config-min-raise').value);
+        formData.append('max-loan', document.getElementById('config-max-loan').value);
+
+        await saveConfig(formData);
+    });
+
+    // 点击弹窗外部关闭弹窗
+    document.getElementById('config-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'config-modal') {
+            closeConfigModal();
+        }
+    });
+
+    // ESC键关闭弹窗
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const configModal = document.getElementById('config-modal');
+            const variablesModal = document.getElementById('variables-modal');
+
+            if (configModal.classList.contains('show')) {
+                closeConfigModal();
+            } else if (variablesModal.classList.contains('show')) {
+                closeVariablesModal();
+            }
+        }
+    });
+
+    // ========== 变量修改弹窗功能 ==========
+
+    // 变量默认值
+    const variableDefaults = {
+        CHIP_WARNING_THRESHOLD: 300,
+        CHIP_CRITICAL_THRESHOLD: 150,
+        BASE_CHEAT_SUCCESS_RATE: 16,
+        MIN_RAISE_PERCENTAGE: 5,
+        MAX_LOAN_TURNS: 6,
+        PRESSURE_MULTIPLIER: 1.0,
+        EXPERIENCE_DECAY_RATE: 0.1,
+        CHEAT_PENALTY_FACTOR: 2.0,
+        MOOD_INFLUENCE_FACTOR: 1.0,
+        AGGRESSIVENESS_LEVEL: 5,
+        DECEPTIVENESS_TENDENCY: 30,
+        RISK_TOLERANCE: 0.5,
+        DEBUG_MODE: "false",
+        THINKING_DELAY: 1.0,
+        CUSTOM_PREFIX: ""
+    };
+
+    // 打开变量修改弹窗
+    async function openVariablesModal() {
+        const modal = document.getElementById('variables-modal');
+        modal.classList.add('show');
+        await loadAllVariables();
+    }
+
+    // 关闭变量修改弹窗
+    function closeVariablesModal() {
+        const modal = document.getElementById('variables-modal');
+        modal.classList.remove('show');
+        hideVariablesMessage();
+    }
+
+    // 显示变量消息
+    function showVariablesMessage(message, type) {
+        const messageEl = document.getElementById('variables-message');
+        messageEl.textContent = message;
+        messageEl.className = `config-message show ${type}`;
+
+        // 3秒后自动隐藏
+        setTimeout(hideVariablesMessage, 3000);
+    }
+
+    // 隐藏变量消息
+    function hideVariablesMessage() {
+        const messageEl = document.getElementById('variables-message');
+        messageEl.className = 'config-message';
+    }
+
+    // 加载所有变量
+    async function loadAllVariables() {
+        try {
+            // 获取游戏配置
+            const gameConfigResponse = await fetch('/api/config');
+            const gameConfig = await gameConfigResponse.json();
+
+            // 获取所有提示词变量
+            const variablesResponse = await fetch('/api/prompts/variables');
+            const variables = await variablesResponse.json();
+
+            // 合并所有变量数据
+            const allVariables = {
+                ...gameConfig,
+                ...variables
+            };
+
+            // 填充表单
+            Object.keys(variableDefaults).forEach(key => {
+                const input = document.getElementById(`var-${key}`);
+                if (input) {
+                    let value = allVariables[key.toLowerCase()] || allVariables[key] || variableDefaults[key];
+
+                    // 处理特殊值转换
+                    if (typeof variableDefaults[key] === 'boolean') {
+                        value = String(value);
+                    } else if (typeof variableDefaults[key] === 'number') {
+                        value = Number(value);
+                    }
+
+                    input.value = value;
+                }
+            });
+
+            showVariablesMessage('变量加载成功', 'success');
+        } catch (error) {
+            console.error('加载变量失败:', error);
+            showVariablesMessage('加载变量失败: ' + error.message, 'error');
+        }
+    }
+
+    // 保存所有变量
+    async function saveAllVariables() {
+        try {
+            showVariablesMessage('正在保存变量...', 'success');
+
+            const updates = [];
+
+            // 收集所有表单数据
+            Object.keys(variableDefaults).forEach(key => {
+                const input = document.getElementById(`var-${key}`);
+                if (input) {
+                    let value = input.value;
+
+                    // 类型转换
+                    if (typeof variableDefaults[key] === 'boolean') {
+                        value = value === 'true';
+                    } else if (typeof variableDefaults[key] === 'number') {
+                        value = Number(value);
+                    }
+
+                    updates.push({
+                        key: key,
+                        value: value
+                    });
+                }
+            });
+
+            // 批量更新变量
+            const updatePromises = updates.map(update =>
+                fetch('/api/prompts/variables', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(update)
+                })
+            );
+
+            const results = await Promise.all(updatePromises);
+            const failedUpdates = results.filter(response => !response.ok);
+
+            if (failedUpdates.length === 0) {
+                showVariablesMessage(`成功保存 ${updates.length} 个变量！`, 'success');
+            } else {
+                showVariablesMessage(`部分变量保存失败: ${failedUpdates.length}/${updates.length}`, 'error');
+            }
+
+        } catch (error) {
+            console.error('保存变量失败:', error);
+            showVariablesMessage('保存变量失败: ' + error.message, 'error');
+        }
+    }
+
+    // 重置所有变量为默认值
+    async function resetAllVariables() {
+        if (!confirm('确定要将所有变量重置为默认值吗？此操作不可恢复。')) {
+            return;
+        }
+
+        try {
+            showVariablesMessage('正在重置变量...', 'success');
+
+            const updates = Object.entries(variableDefaults).map(([key, value]) => ({
+                key: key,
+                value: value
+            }));
+
+            const updatePromises = updates.map(update =>
+                fetch('/api/prompts/variables', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(update)
+                })
+            );
+
+            const results = await Promise.all(updatePromises);
+            const failedUpdates = results.filter(response => !response.ok);
+
+            if (failedUpdates.length === 0) {
+                showVariablesMessage('所有变量已重置为默认值！', 'success');
+                // 重新加载表单
+                setTimeout(loadAllVariables, 500);
+            } else {
+                showVariablesMessage(`部分变量重置失败: ${failedUpdates.length}/${updates.length}`, 'error');
+            }
+
+        } catch (error) {
+            console.error('重置变量失败:', error);
+            showVariablesMessage('重置变量失败: ' + error.message, 'error');
+        }
+    }
+
+    // 导出当前配置
+    function exportVariables() {
+        try {
+            const config = {};
+
+            // 收集当前所有变量的值
+            Object.keys(variableDefaults).forEach(key => {
+                const input = document.getElementById(`var-${key}`);
+                if (input) {
+                    let value = input.value;
+
+                    // 类型转换
+                    if (typeof variableDefaults[key] === 'boolean') {
+                        value = value === 'true';
+                    } else if (typeof variableDefaults[key] === 'number') {
+                        value = Number(value);
+                    }
+
+                    config[key] = value;
+                }
+            });
+
+            // 创建下载
+            const dataStr = JSON.stringify(config, null, 2);
+            const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+
+            const exportFileDefaultName = `zhajinhua_variables_${new Date().toISOString().slice(0, 10)}.json`;
+
+            const linkElement = document.createElement('a');
+            linkElement.setAttribute('href', dataUri);
+            linkElement.setAttribute('download', exportFileDefaultName);
+            linkElement.click();
+
+            showVariablesMessage('配置导出成功！', 'success');
+        } catch (error) {
+            console.error('导出配置失败:', error);
+            showVariablesMessage('导出配置失败: ' + error.message, 'error');
+        }
+    }
+
+    // 导入配置
+    function importVariables() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+
+        input.onchange = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            try {
+                const text = await file.text();
+                const config = JSON.parse(text);
+
+                // 验证配置格式
+                let validConfig = true;
+                Object.keys(config).forEach(key => {
+                    if (!(key in variableDefaults)) {
+                        validConfig = false;
+                        console.warn(`未知的变量: ${key}`);
+                    }
+                });
+
+                if (!validConfig) {
+                    if (!confirm('配置文件包含未知的变量，是否继续导入已知变量？')) {
+                        return;
+                    }
+                }
+
+                // 应用配置到表单
+                Object.keys(variableDefaults).forEach(key => {
+                    const input = document.getElementById(`var-${key}`);
+                    if (input && key in config) {
+                        let value = config[key];
+
+                        // 确保值类型正确
+                        if (typeof variableDefaults[key] === 'boolean') {
+                            value = Boolean(value);
+                        } else if (typeof variableDefaults[key] === 'number') {
+                            value = Number(value);
+                        }
+
+                        input.value = value;
+                    }
+                });
+
+                showVariablesMessage('配置导入成功！请点击"保存所有变量"以应用更改。', 'success');
+            } catch (error) {
+                console.error('导入配置失败:', error);
+                showVariablesMessage('导入配置失败: ' + error.message, 'error');
+            }
+        };
+
+        input.click();
+    }
+
+    // 刷新变量
+    async function refreshVariables() {
+        await loadAllVariables();
+    }
+
+    // 点击弹窗外部关闭弹窗
+    document.getElementById('variables-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'variables-modal') {
+            closeVariablesModal();
+        }
+    });
+
+    // 模型选择相关变量和函数
+    let currentModels = [];
+    let selectedModels = new Set();
+    let modelSettings = {};
+
+    // 打开模型选择弹窗
+    async function openModelsModal() {
+        document.getElementById('models-modal').style.display = 'block';
+        await loadModels();
+    }
+
+    // 关闭模型选择弹窗
+    function closeModelsModal() {
+        document.getElementById('models-modal').style.display = 'none';
+    }
+
+    // 加载模型列表
+    async function loadModels() {
+        try {
+            const response = await fetch('/api/models/');
+            if (!response.ok) {
+                throw new Error('获取模型列表失败');
+            }
+
+            const data = await response.json();
+            currentModels = data.models;
+            modelSettings = data.settings;
+
+            // 更新设置显示
+            document.getElementById('min-models').textContent = modelSettings.min_selected_models;
+            document.getElementById('max-models').textContent = modelSettings.max_selected_models;
+
+            // 选中当前已选择的模型
+            selectedModels = new Set(
+                currentModels
+                    .filter(model => model.selected)
+                    .map(model => model.id)
+            );
+
+            renderModels();
+            updateSelectionInfo();
+
+        } catch (error) {
+            console.error('加载模型失败:', error);
+            document.getElementById('models-content').innerHTML =
+                `<div class="error">加载模型失败: ${error.message}</div>`;
+        }
+    }
+
+    // 渲染模型列表
+    function renderModels() {
+        const container = document.getElementById('models-content');
+
+        if (currentModels.length === 0) {
+            container.innerHTML = '<div class="loading">没有可用的模型</div>';
+            return;
+        }
+
+        const modelsGrid = document.createElement('div');
+        modelsGrid.className = 'models-grid';
+
+        currentModels.forEach(model => {
+            const modelItem = document.createElement('div');
+            modelItem.className = `model-item ${model.enabled ? '' : 'disabled'} ${selectedModels.has(model.id) ? 'selected' : ''}`;
+
+            if (!model.enabled) {
+                modelItem.onclick = null;
+            } else {
+                modelItem.onclick = () => toggleModelSelection(model.id);
+            }
+
+            modelItem.innerHTML = `
+                <input type="checkbox"
+                       class="model-checkbox"
+                       ${selectedModels.has(model.id) ? 'checked' : ''}
+                       ${model.enabled ? '' : 'disabled'}
+                       onclick="event.stopPropagation(); toggleModelSelection('${model.id}')">
+                <div class="model-name">${model.display_name || model.name}</div>
+                <div class="model-id">${model.id}</div>
+                <div class="model-provider">${model.provider}</div>
+                <div class="model-description">${model.description || '暂无描述'}</div>
+            `;
+
+            modelsGrid.appendChild(modelItem);
+        });
+
+        container.innerHTML = '';
+        container.appendChild(modelsGrid);
+    }
+
+    // 切换模型选择状态
+    function toggleModelSelection(modelId) {
+        if (selectedModels.has(modelId)) {
+            selectedModels.delete(modelId);
+        } else {
+            // 检查是否超过最大数量限制
+            if (selectedModels.size >= modelSettings.max_selected_models) {
+                showModelsMessage(`最多只能选择 ${modelSettings.max_selected_models} 个模型`, 'error');
+                return;
+            }
+            selectedModels.add(modelId);
+        }
+
+        renderModels();
+        updateSelectionInfo();
+    }
+
+    // 更新选择信息
+    function updateSelectionInfo() {
+        const count = selectedModels.size;
+        const minCount = modelSettings.min_selected_models;
+        const maxCount = modelSettings.max_selected_models;
+
+        document.getElementById('selection-count').textContent = `已选择 ${count} 个模型`;
+
+        const saveButton = document.getElementById('save-models-btn');
+        saveButton.disabled = count < minCount || count > maxCount;
+    }
+
+    // 显示消息
+    function showModelsMessage(message, type = 'info') {
+        const messageDiv = document.getElementById('models-message');
+        messageDiv.className = type;
+        messageDiv.textContent = message;
+
+        if (type !== 'error') {
+            setTimeout(() => {
+                messageDiv.textContent = '';
+                messageDiv.className = '';
+            }, 3000);
+        }
+    }
+
+    // 保存模型选择
+    async function saveModelSelection() {
+        try {
+            const modelIds = Array.from(selectedModels);
+
+            const response = await fetch('/api/models/select', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model_ids: modelIds
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || '保存失败');
+            }
+
+            const result = await response.json();
+            showModelsMessage(result.message, 'success');
+
+            // 延迟关闭弹窗
+            setTimeout(() => {
+                closeModelsModal();
+            }, 1500);
+
+        } catch (error) {
+            console.error('保存模型选择失败:', error);
+            showModelsMessage(`保存失败: ${error.message}`, 'error');
+        }
+    }
+
+    // 恢复默认模型选择
+    async function resetToDefaultModels() {
+        try {
+            const response = await fetch('/api/models/reset', {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                throw new Error('重置失败');
+            }
+
+            const result = await response.json();
+            showModelsMessage(result.message, 'success');
+
+            // 重新加载模型列表
+            await loadModels();
+
+        } catch (error) {
+            console.error('重置模型选择失败:', error);
+            showModelsMessage(`重置失败: ${error.message}`, 'error');
+        }
+    }
+
+    // 添加模型选择弹窗的点击外部关闭功能
+    document.getElementById('models-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'models-modal') {
+            closeModelsModal();
+        }
+    });
 </script>
 </body>
 </html>

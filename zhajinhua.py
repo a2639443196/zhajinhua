@@ -368,3 +368,39 @@ class ZhajinhuaGame:
             "history": [{"player": a.player, "type": a.type.name, "amount": a.amount, "target": a.target}
                         for a in st.history if isinstance(a, Action)],
         }
+
+    def get_final_summary(self) -> dict:
+        """
+        获取游戏最终总结信息，用于日志保存
+        """
+        if not self.state.finished:
+            return {"status": "游戏尚未结束"}
+
+        summary = {
+            "game_finished": True,
+            "winner": self.state.winner,
+            "final_pot": self.state.pot_at_showdown or 0,
+            "total_rounds": self.state.round_count,
+            "final_hand": None,
+            "player_final_states": []
+        }
+
+        # 添加获胜者手牌信息
+        if self.state.winner is not None and self.state.winner < len(self.state.players):
+            winner_ps = self.state.players[self.state.winner]
+            if winner_ps.hand:
+                summary["final_hand"] = [INT_TO_RANK[c.rank] + SUITS[c.suit] for c in winner_ps.hand]
+
+        # 添加所有玩家的最终状态
+        for i, ps in enumerate(self.state.players):
+            player_info = {
+                "player_id": i,
+                "final_chips": ps.chips,
+                "alive": ps.alive,
+                "all_in": ps.all_in,
+                "looked": ps.looked,
+                "hand": [INT_TO_RANK[c.rank] + SUITS[c.suit] for c in ps.hand] if ps.hand else []
+            }
+            summary["player_final_states"].append(player_info)
+
+        return summary

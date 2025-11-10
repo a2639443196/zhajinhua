@@ -13,16 +13,45 @@ import threading
 from fastapi.responses import FileResponse, JSONResponse
 import os
 import json
+from prompt_manager import prompt_manager  # 导入提示词管理器
+from prompt_api import router as prompt_router  # 导入提示词API路由
 
 # --- (结束) ---
-# --- 1. LLM 玩家配置 (无修改) ---
-player_configs = [
-    # {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
+# --- 1. 模型管理器 (新的动态配置系统) ---
+# 从模型管理器获取当前选中的玩家配置
+from model_manager import model_manager
+
+def get_current_player_configs():
+    """获取当前选中的玩家配置"""
+    try:
+        configs = model_manager.get_selected_model_configs()
+        if not configs:
+            # 如果没有选中的配置，使用默认配置
+            print("【警告】: 没有选中的模型，使用默认配置")
+            configs = [
+                {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
+                {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
+                {"name": "deepseekv3", "model": "deepseek-ai/DeepSeek-V3"},
+            ]
+        print(f"【信息】: 当前选中 {len(configs)} 个模型参赛")
+        return configs
+    except Exception as e:
+        print(f"【错误】: 获取玩家配置失败: {e}")
+        # 回退到硬编码配置
+        return [
+            {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
+            {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
+            {"name": "deepseekv3", "model": "deepseek-ai/DeepSeek-V3"},
+        ]
+
+# 旧的硬编码配置保留作为备用
+legacy_player_configs = [
+    {"name": "DouBao", "model": "doubao-seed-1-6-lite-251015"},
     {"name": "kimiK2", "model": "moonshotai/Kimi-K2-Instruct-0905"},
     {"name": "Qwen", "model": "Qwen/Qwen3-Next-80B-A3B-Instruct"},
     {"name": "Ling", "model": "inclusionAI/Ling-1T"},
     {"name": "deepseekv3", "model": "deepseek-ai/DeepSeek-V3"},
-    {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
+    # {"name": "BaiDu", "model": "baidu/ERNIE-4.5-300B-A47B"},
     {"name": "DeepSeek", "model": "deepseek-ai/DeepSeek-V3.1-Terminus"},
 ]
 
@@ -180,9 +209,17 @@ class ConnectionManager:
 
 
 # --- (新) 游戏结束时调用的辅助函数 ---
-async def save_log_and_cleanup(log_collector: GameLogCollector, controller_hand_count: int, reason: str):
+async def save_log_and_cleanup(log_collector: GameLogCollector, controller_hand_count: int, reason: str,
+                               game_controller=None):
     """
     保存日志文件，广播状态，并重置全局游戏任务。
+    如果提供了game_controller，将调用完整的信息重置功能。
+
+    Args:
+        log_collector: 游戏日志收集器
+        controller_hand_count: 总手牌数
+        reason: 游戏结束原因
+        game_controller: 可选的游戏控制器，用于执行完整的信息重置
     """
     global game_loop_task, LATEST_LOG_FILE
 
@@ -210,6 +247,14 @@ async def save_log_and_cleanup(log_collector: GameLogCollector, controller_hand_
         print(f"【上帝视角】: {log_error_msg}")
         await manager.broadcast_log(log_error_msg)
 
+    # 如果提供了游戏控制器，调用完整的信息重置功能
+    if game_controller:
+        try:
+            await game_controller.complete_game_reset(log_collector)
+            print(f"【上帝视角】: 游戏信息完全重置完成")
+        except Exception as e:
+            print(f"【上帝视角】(警告): 游戏信息重置时出错: {e}")
+
     await manager.broadcast_status(running=False)
     game_loop_task = None
 
@@ -217,6 +262,38 @@ async def save_log_and_cleanup(log_collector: GameLogCollector, controller_hand_
 manager = ConnectionManager()
 app = FastAPI()
 game_loop_task: asyncio.Task | None = None
+
+# 注册提示词API路由
+app.include_router(prompt_router)
+
+# 注册模型管理API路由
+from model_api import model_router
+app.include_router(model_router)
+
+# 初始化提示词变量
+from init_prompt_vars import init_prompt_variables
+
+init_prompt_variables()
+
+
+# 配置页面路由
+@app.get("/config")
+async def config_page():
+    """提供配置页面"""
+    return FileResponse('static/config.html')
+
+
+# 默认配置路由
+@app.get("/api/config")
+async def get_config():
+    """获取当前游戏配置"""
+    return {
+        "chip_warning_threshold": prompt_manager.variables.get('CHIP_WARNING_THRESHOLD', 300),
+        "chip_critical_threshold": prompt_manager.variables.get('CHIP_CRITICAL_THRESHOLD', 150),
+        "base_cheat_success_rate": prompt_manager.variables.get('BASE_CHEAT_SUCCESS_RATE', 16),
+        "min_raise_percentage": prompt_manager.variables.get('MIN_RAISE_PERCENTAGE', 5),
+        "max_loan_turns": prompt_manager.variables.get('MAX_LOAN_TURNS', 6),
+    }
 
 
 # --- 3. 游戏循环 (已修改以支持日志记录) ---
@@ -266,7 +343,8 @@ async def run_llm_game_loop(config: dict | None = None):
         # 若解析失败，回退到默认值
         despair_threshold = 1000
 
-    # --- (新) 2. 随机打乱玩家顺序 ---
+    # --- (新) 2. 获取当前选中的模型配置并随机打乱玩家顺序 ---
+    player_configs = get_current_player_configs()
     shuffled_configs = player_configs.copy()
     random.shuffle(shuffled_configs)
     new_order_str = ", ".join([p["name"] for p in shuffled_configs])
@@ -288,22 +366,22 @@ async def run_llm_game_loop(config: dict | None = None):
         await controller.run_game()
         hand_count = controller.hand_count if controller else 0
         await god_print_and_broadcast(f"--- 锦标赛结束 (共 {hand_count} 手牌) ---", 2.0)
-        # (新) 游戏正常结束，保存日志
-        await save_log_and_cleanup(log_collector, hand_count, "正常结束")
+        # (新) 游戏正常结束，保存日志并重置所有信息
+        await save_log_and_cleanup(log_collector, hand_count, "正常结束", controller)
 
     except asyncio.CancelledError:
         hand_count = controller.hand_count if controller else 0
         await god_print_and_broadcast(f"--- 锦标赛被上帝强制终止 ---", 1.0)
-        # (新) 游戏被取消，保存日志
-        await save_log_and_cleanup(log_collector, hand_count, "手动停止")
+        # (新) 游戏被取消，保存日志并重置所有信息
+        await save_log_and_cleanup(log_collector, hand_count, "手动停止", controller)
 
     except Exception as e:
         hand_count = controller.hand_count if controller else 0
         await god_print_and_broadcast(f"!! 游戏控制器发生严重错误: {e} !!", 1)
         import traceback
         traceback.print_exc()
-        # (新) 游戏崩溃，保存日志
-        await save_log_and_cleanup(log_collector, hand_count, f"崩溃 (Error: {e})")
+        # (新) 游戏崩溃，保存日志并重置所有信息
+        await save_log_and_cleanup(log_collector, hand_count, f"崩溃 (Error: {e})", controller)
 
 
 # --- 4. FastAPI 路由 (无修改) ---
@@ -374,7 +452,7 @@ if __name__ == "__main__":
     # (新) 定义人设文件路径和条目数限制 'n'
     BASE_DIR = Path(__file__).parent.resolve()
     PERSONA_FILE_PATH = BASE_DIR / "used_personas.json"
-    ITEM_LIMIT = player_configs.__len__() * 9  # <--- 这是 n (条目数)
+    ITEM_LIMIT = 50  # <--- 这是 n (条目数)
 
     try:
         if PERSONA_FILE_PATH.exists():
@@ -393,7 +471,8 @@ if __name__ == "__main__":
 
             # (新) 检查条目数是否 > n
             if item_count > ITEM_LIMIT:
-                print(f"【系统】: 人设文件 '{PERSONA_FILE_PATH.name}' (共 {item_count} 条) 超过 {ITEM_LIMIT} 条限制，正在清空...")
+                print(
+                    f"【系统】: 人设文件 '{PERSONA_FILE_PATH.name}' (共 {item_count} 条) 超过 {ITEM_LIMIT} 条限制，正在清空...")
 
                 # 重置为空列表 "[]"，以确保 game_controller 能正确解析
                 with PERSONA_FILE_PATH.open("w", encoding="utf-8") as f:

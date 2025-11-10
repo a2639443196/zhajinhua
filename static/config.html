@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>炸金花 - 动态配置</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button.reset {
+            background-color: #f44336;
+        }
+        button.reset:hover {
+            background-color: #da190b;
+        }
+        .message {
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+            display: none;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+            border: 1px solid #d6e9c6;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+            border: 1px solid #ebccd1;
+        }
+        .info {
+            background-color: #d9edf7;
+            color: #31708f;
+            border: 1px solid #bce8f1;
+        }
+        .preview {
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }
+        .preview h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .preview pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #ffffff;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ced4da;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .current-values {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .current-values h3 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎰 炸金花游戏动态配置</h1>
+
+        <div class="current-values">
+            <h3>当前配置值</h3>
+            <div id="currentConfig">加载中...</div>
+        </div>
+
+        <form id="configForm">
+            <div class="form-group">
+                <label for="chipWarningThreshold">筹码警戒线 (CHIP_WARNING_THRESHOLD)</label>
+                <input type="number" id="chipWarningThreshold" name="chipWarningThreshold" min="100" max="1000" step="50" required>
+                <small>低于此值将触发生存模式策略</small>
+            </div>
+
+            <div class="form-group">
+                <label for="chipCriticalThreshold">极度危险阈值 (CHIP_CRITICAL_THRESHOLD)</label>
+                <input type="number" id="chipCriticalThreshold" name="chipCriticalThreshold" min="50" max="500" step="50" required>
+                <small>低于此值必须采取极端行动</small>
+            </div>
+
+            <div class="form-group">
+                <label for="baseCheatSuccessRate">基础作弊成功率 (%)</label>
+                <input type="number" id="baseCheatSuccessRate" name="baseCheatSuccessRate" min="5" max="50" step="1" required>
+                <small>换牌作弊的基础成功率</small>
+            </div>
+
+            <div class="form-group">
+                <label for="minRaisePercentage">最小加注百分比 (%)</label>
+                <input type="number" id="minRaisePercentage" name="minRaisePercentage" min="1" max="20" step="1" required>
+                <small>闷注的最小百分比</small>
+            </div>
+
+            <div class="form-group">
+                <label for="maxLoanTurns">最大贷款手数</label>
+                <input type="number" id="maxLoanTurns" name="maxLoanTurns" min="2" max="10" step="1" required>
+                <small>系统金库允许的最大还款手数</small>
+            </div>
+
+            <button type="submit">保存配置</button>
+            <button type="button" class="reset" onclick="resetToDefaults()">恢复默认</button>
+            <button type="button" onclick="previewPrompt()">预览提示词</button>
+        </form>
+
+        <div id="message" class="message"></div>
+
+        <div class="preview" id="previewSection" style="display: none;">
+            <h3>提示词预览 (decide_action_prompt.txt)</h3>
+            <pre id="promptPreview"></pre>
+        </div>
+    </div>
+
+    <script>
+        // 默认配置
+        const defaultConfig = {
+            CHIP_WARNING_THRESHOLD: 300,
+            CHIP_CRITICAL_THRESHOLD: 150,
+            BASE_CHEAT_SUCCESS_RATE: 16,
+            MIN_RAISE_PERCENTAGE: 5,
+            MAX_LOAN_TURNS: 6
+        };
+
+        // 页面加载时获取当前配置
+        async function loadCurrentConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+
+                // 更新表单
+                document.getElementById('chipWarningThreshold').value = config.chip_warning_threshold;
+                document.getElementById('chipCriticalThreshold').value = config.chip_critical_threshold;
+                document.getElementById('baseCheatSuccessRate').value = config.base_cheat_success_rate;
+                document.getElementById('minRaisePercentage').value = config.min_raise_percentage || defaultConfig.MIN_RAISE_PERCENTAGE;
+                document.getElementById('maxLoanTurns').value = config.max_loan_turns || defaultConfig.MAX_LOAN_TURNS;
+
+                // 更新当前配置显示
+                updateCurrentConfigDisplay(config);
+            } catch (error) {
+                showMessage('加载配置失败: ' + error.message, 'error');
+            }
+        }
+
+        // 更新当前配置显示
+        function updateCurrentConfigDisplay(config) {
+            const display = document.getElementById('currentConfig');
+            display.innerHTML = `
+                <p><strong>筹码警戒线:</strong> ${config.chip_warning_threshold} 筹码</p>
+                <p><strong>极度危险阈值:</strong> ${config.chip_critical_threshold} 筹码</p>
+                <p><strong>基础作弊成功率:</strong> ${config.base_cheat_success_rate}%</p>
+                <p><strong>最小加注百分比:</strong> ${config.min_raise_percentage || defaultConfig.MIN_RAISE_PERCENTAGE}%</p>
+                <p><strong>最大贷款手数:</strong> ${config.max_loan_turns || defaultConfig.MAX_LOAN_TURNS} 手</p>
+            `;
+        }
+
+        // 保存配置
+        document.getElementById('configForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const updates = [
+                { key: 'CHIP_WARNING_THRESHOLD', value: parseInt(formData.get('chipWarningThreshold')) },
+                { key: 'CHIP_CRITICAL_THRESHOLD', value: parseInt(formData.get('chipCriticalThreshold')) },
+                { key: 'BASE_CHEAT_SUCCESS_RATE', value: parseInt(formData.get('baseCheatSuccessRate')) },
+                { key: 'MIN_RAISE_PERCENTAGE', value: parseInt(formData.get('minRaisePercentage')) },
+                { key: 'MAX_LOAN_TURNS', value: parseInt(formData.get('maxLoanTurns')) }
+            ];
+
+            try {
+                // 批量更新
+                const response = await fetch('/api/prompts/variables/batch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ variables: {} })
+                });
+
+                // 逐个更新变量
+                for (const update of updates) {
+                    await fetch('/api/prompts/variables', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(update)
+                    });
+                }
+
+                showMessage('配置保存成功！提示词将在下一局游戏中生效。', 'success');
+
+                // 重新加载配置
+                setTimeout(loadCurrentConfig, 500);
+            } catch (error) {
+                showMessage('保存失败: ' + error.message, 'error');
+            }
+        });
+
+        // 恢复默认值
+        async function resetToDefaults() {
+            if (!confirm('确定要恢复默认配置吗？')) return;
+
+            try {
+                for (const [key, value] of Object.entries(defaultConfig)) {
+                    await fetch('/api/prompts/variables', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ key, value })
+                    });
+                }
+
+                showMessage('已恢复默认配置', 'success');
+                setTimeout(loadCurrentConfig, 500);
+            } catch (error) {
+                showMessage('恢复失败: ' + error.message, 'error');
+            }
+        }
+
+        // 预览提示词
+        async function previewPrompt() {
+            const warningThreshold = document.getElementById('chipWarningThreshold').value;
+            const criticalThreshold = document.getElementById('chipCriticalThreshold').value;
+            const cheatRate = document.getElementById('baseCheatSuccessRate').value;
+
+            try {
+                const response = await fetch(`/api/prompts/template/decide_action_prompt.txt/preview?CHIP_WARNING_THRESHOLD=${warningThreshold}&CHIP_CRITICAL_THRESHOLD=${criticalThreshold}&BASE_CHEAT_SUCCESS_RATE=${cheatRate}`);
+                const data = await response.json();
+
+                document.getElementById('promptPreview').textContent = data.content.substring(0, 2000) + '...';
+                document.getElementById('previewSection').style.display = 'block';
+            } catch (error) {
+                showMessage('预览失败: ' + error.message, 'error');
+            }
+        }
+
+        // 显示消息
+        function showMessage(text, type) {
+            const messageEl = document.getElementById('message');
+            messageEl.textContent = text;
+            messageEl.className = `message ${type}`;
+            messageEl.style.display = 'block';
+
+            setTimeout(() => {
+                messageEl.style.display = 'none';
+            }, 5000);
+        }
+
+        // 页面加载时执行
+        window.addEventListener('load', loadCurrentConfig);
+    </script>
+</body>
+</html>

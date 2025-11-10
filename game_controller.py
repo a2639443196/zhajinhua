@@ -2056,10 +2056,34 @@ class GameController:
             await asyncio.sleep(3)
 
         await self.god_print(f"--- 锦标赛结束 ---", 2)
+
+        # 找出最终获胜者
+        final_winner = None
+        final_winner_chips = 0
         for i, p in enumerate(self.players):
             if self.persistent_chips[i] > 0:
-                await self.god_print(f"最终胜利者是: {p.name} (剩余筹码: {self.persistent_chips[i]})!", 5)
+                final_winner = p
+                final_winner_chips = self.persistent_chips[i]
+                await self.god_print(f"🏆 最终胜利者是: {p.name} (剩余筹码: {self.persistent_chips[i]})!", 5)
                 break
+
+        # 准备完全重置对局信息
+        await self.god_print("🔄 正在准备完全重置对局信息...", 2)
+
+        # 生成锦标赛总结报告
+        if final_winner:
+            try:
+                await self._generate_tournament_summary(final_winner, final_winner_chips)
+            except Exception as e:
+                await self.god_print(f"⚠️ 生成锦标赛总结时出错: {e}", 1)
+
+        # 返回游戏结束信息，外部将调用 complete_game_reset 进行清理
+        return {
+            "tournament_complete": True,
+            "winner": final_winner.name if final_winner else None,
+            "winner_chips": final_winner_chips,
+            "total_hands": self.hand_count
+        }
 
     def _build_llm_prompt(self, game: ZhajinhuaGame, player_id: int, start_player_id: int,
                           player_debuffs: Optional[set[str]] = None) -> tuple:
@@ -4441,3 +4465,188 @@ class GameController:
         
         # (新) 游戏结束时的道具奖励机制
         await self._distribute_item_rewards(game, winner_id)
+
+    async def complete_game_reset(self, log_collector=None):
+        """
+        完全重置对局信息，清理所有AI数据，只保留配置参数
+
+        Args:
+            log_collector: 可选的日志收集器，用于保存最终游戏日志
+        """
+        await self.god_print("🔄 开始完全重置对局信息...", 2)
+
+        # 1. 保存最终游戏日志
+        if log_collector:
+            try:
+                await self._save_final_game_log(log_collector)
+            except Exception as e:
+                await self.god_print(f"⚠️ 保存最终游戏日志时出错: {e}", 1)
+
+        # 2. 重置所有AI信息
+        await self._reset_all_ai_data()
+
+        # 3. 清理游戏状态
+        self._reset_game_state()
+
+        # 4. 清理所有日志和缓存
+        self._clear_all_logs_and_cache()
+
+        # 5. 强制垃圾回收
+        import gc
+        gc.collect()
+
+        await self.god_print("✅ 对局信息重置完成，已准备开始新对局", 2)
+
+    async def _save_final_game_log(self, log_collector):
+        """
+        保存最终的游戏日志，包含完整的游戏统计信息
+        """
+        log_text = log_collector.get_full_log()
+
+        # 添加游戏最终统计信息到日志
+        final_stats = await self._generate_final_game_stats()
+        enhanced_log = f"""{log_text}
+
+=== 游戏最终统计 ===
+{final_stats}
+
+=== 游戏结束时间 ===
+{time.strftime("%Y-%m-%d %H:%M:%S")}
+"""
+
+        # 保存到日志目录
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_filename = log_dir / f"final_game_log_{timestamp}.txt"
+
+        with open(log_filename, "w", encoding="utf-8") as f:
+            f.write(enhanced_log)
+
+        log_announce_msg = f"📁 最终游戏日志已保存: {log_filename}"
+        print(f"【上帝视角】: {log_announce_msg}")
+        await self.god_print(log_announce_msg, 1)
+
+    async def _generate_final_game_stats(self):
+        """
+        生成最终的游戏统计信息
+        """
+        stats_lines = [
+            f"总手牌数: {self.hand_count}",
+            f"最终存活玩家数: {self.get_alive_player_count()}",
+            ""
+        ]
+
+        # 玩家统计
+        stats_lines.append("=== 玩家最终状态 ===")
+        for i, player in enumerate(self.players):
+            stats_lines.extend([
+                f"玩家 {i+1}: {player.name}",
+                f"  - 最终筹码: {self.persistent_chips[i]}",
+                f"  - 存活状态: {'存活' if player.alive else '淘汰'}",
+                f"  - 经验值: {player.experience:.1f}",
+                f"  - 经验等级: {player.get_experience_level()}",
+                f"  - 作弊尝试: {player.cheat_attempts} 次",
+                f"  - 作弊成功: {player.cheat_success} 次",
+                f"  - 心理博弈: {player.mindgame_moves} 次",
+                ""
+            ])
+
+        # 人设使用情况
+        stats_lines.append("=== 人设使用记录 ===")
+        for i, persona in enumerate(self.player_personas):
+            if persona and f"我是 {self.players[i].name}" not in persona:
+                stats_lines.append(f"{self.players[i].name}: {persona[:100]}...")
+
+        return "\n".join(stats_lines)
+
+    async def _reset_all_ai_data(self):
+        """
+        重置所有AI相关信息
+        """
+        await self.god_print("🔄 正在重置所有AI信息...", 1)
+
+        for i, player in enumerate(self.players):
+            # 重置玩家经验值
+            player.experience = 0.0
+
+            # 清空人设信息
+            player.persona_tags.clear()
+            player.persona_text = ""
+
+            # 清空游戏历史和状态
+            player.play_history.clear()
+            player.current_pressure = 0.0
+
+            # 重置作弊统计
+            player.cheat_attempts = 0
+            player.cheat_success = 0
+            player.mindgame_moves = 0
+
+            # 清空道具背包
+            player.inventory.clear()
+
+            # 清空贷款数据
+            player.loan_data.clear()
+
+            # 重置存活状态（根据筹码情况）
+            player.alive = self.persistent_chips[i] > 0
+
+        # 清空人设记录
+        self.player_personas = [""] * self.num_players
+
+        # 清空印象记录
+        self.player_private_impressions.clear()
+
+        # 清空反思记录
+        self.player_reflections.clear()
+
+        await self.god_print("✅ AI信息重置完成", 1)
+
+    def _reset_game_state(self):
+        """
+        重置游戏状态，只保留配置参数
+        """
+        # 重置手牌计数
+        self.hand_count = 0
+
+        # 重置获胜者ID
+        self.last_winner_id = -1
+
+        # 重置游戏配置相关状态
+        self.global_alert_level = 0.0
+
+        # 重置临时状态
+        self.current_round_loans = []
+
+        # 清空使用过的人设（为下一局游戏准备全新的人设）
+        self.used_personas.clear()
+
+        # 重置筹码状态（回到初始值）
+        # 注意：这里不重置 persistent_chips，因为它应该反映上一局的最终结果
+        # 可以选择是否重置到初始值
+
+    def _clear_all_logs_and_cache(self):
+        """
+        清空所有日志和缓存
+        """
+        # 清空手牌历史缓存
+        self._hand_history_cache.clear()
+
+        # 清空当前手牌的所有日志
+        self.secret_message_log.clear()
+        self.cheat_action_log.clear()
+        self.public_event_log.clear()
+
+        # 清空系统消息
+        self._clear_system_messages()
+
+        # 清空活跃效果
+        self.active_effects.clear()
+
+    def _generate_tournament_summary(self, final_winner, final_winner_chips):
+        """
+        生成锦标赛总结报告（如果此方法存在的话）
+        """
+        # 这是一个占位符方法，实际实现可能 elsewhere
+        pass

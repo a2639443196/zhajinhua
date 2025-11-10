@@ -1,0 +1,76 @@
+{
+  "available_models": [
+    {
+      "id": "doubao-seed-1-6-lite-251015",
+      "name": "DouBao",
+      "display_name": "豆包 (轻量版)",
+      "description": "字节跳动的轻量级模型，响应快速",
+      "provider": "bytedance",
+      "enabled": true,
+      "selected": true
+    },
+    {
+      "id": "moonshotai/Kimi-K2-Instruct-0905",
+      "name": "kimiK2",
+      "display_name": "Kimi K2",
+      "description": "月之暗面的Kimi K2模型，长文本处理能力强",
+      "provider": "moonshot",
+      "enabled": true,
+      "selected": true
+    },
+    {
+      "id": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+      "name": "Qwen",
+      "display_name": "通义千问 Next 80B",
+      "description": "阿里巴巴的大规模语言模型",
+      "provider": "alibaba",
+      "enabled": true,
+      "selected": false
+    },
+    {
+      "id": "inclusionAI/Ling-1T",
+      "name": "Ling",
+      "display_name": "灵语 1T",
+      "description": "大规模参数模型，理解能力强",
+      "provider": "inclusion",
+      "enabled": true,
+      "selected": false
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-V3",
+      "name": "deepseekv3",
+      "display_name": "DeepSeek V3",
+      "description": "深度求索的V3版本模型",
+      "provider": "deepseek",
+      "enabled": true,
+      "selected": false
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-V3.1-Terminus",
+      "name": "DeepSeek",
+      "display_name": "DeepSeek V3.1 Terminus",
+      "description": "深度求索的最新V3.1版本",
+      "provider": "deepseek",
+      "enabled": true,
+      "selected": false
+    },
+    {
+      "id": "baidu/ERNIE-4.5-300B-A47B",
+      "name": "BaiDu",
+      "display_name": "文心一言 4.5",
+      "description": "百度的大规模预训练模型",
+      "provider": "baidu",
+      "enabled": false,
+      "selected": false
+    }
+  ],
+  "settings": {
+    "min_selected_models": 2,
+    "max_selected_models": 8,
+    "default_models": [
+      "doubao-seed-1-6-lite-251015",
+      "moonshotai/Kimi-K2-Instruct-0905",
+      "deepseek-ai/DeepSeek-V3"
+    ]
+  }
+}

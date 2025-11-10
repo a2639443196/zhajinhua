@@ -7,13 +7,7 @@ from typing import List, Dict, Callable, Awaitable, Optional, Tuple
 from llm_client import LLMClient
 import pathlib
 import traceback  # (新) 导入 traceback
-
-BASE_DIR = pathlib.Path(__file__).parent.resolve()
-DECIDE_ACTION_PROMPT_PATH = BASE_DIR / "prompt/decide_action_prompt.txt"
-REFLECT_PROMPT_PATH = BASE_DIR / "prompt/reflect_prompt_template.txt"
-CREATE_PERSONA_PROMPT_PATH = BASE_DIR / "prompt/create_persona_prompt.txt"
-DEFEND_PROMPT_PATH = BASE_DIR / "prompt/defend_prompt.txt"
-VOTE_PROMPT_PATH = BASE_DIR / "prompt/vote_prompt.txt"
+from prompt_manager import prompt_manager  # 导入提示词管理器
 
 
 class Player:
@@ -286,7 +280,8 @@ class Player:
         start_idx: Optional[int] = None
 
         for idx, ch in enumerate(text):
-            if ch == '{':
+            # 处理双花括号情况 {{ ... }}
+            if ch == '{' and (idx == 0 or text[idx-1] != '{'):
                 if not stack:
                     start_idx = idx
                 stack.append(ch)
@@ -294,7 +289,10 @@ class Player:
                 if stack:
                     stack.pop()
                     if not stack and start_idx is not None:
-                        candidates.append(text[start_idx: idx + 1])
+                        candidate = text[start_idx: idx + 1]
+                        # 修复双花括号
+                        candidate = candidate.replace('{{', '{').replace('}}', '}')
+                        candidates.append(candidate)
                         start_idx = None
 
         return candidates
@@ -305,24 +303,98 @@ class Player:
         if not candidate:
             return None
 
+        # 首先尝试直接解析
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
             pass
 
-        last_brace = candidate.rfind('}')
-        if last_brace != -1 and last_brace < len(candidate) - 1:
-            trimmed = candidate[:last_brace + 1]
-            try:
-                return json.loads(trimmed)
-            except json.JSONDecodeError:
-                candidate = trimmed
-
-        python_like = re.sub(r'\bnull\b', 'None', candidate)
-        python_like = re.sub(r'\btrue\b', 'True', python_like)
-        python_like = re.sub(r'\bfalse\b', 'False', python_like)
-
+        # 尝试修复常见的JSON格式问题
         try:
+            # 移除末尾多余的内容
+            last_brace = candidate.rfind('}')
+            if last_brace != -1:
+                trimmed = candidate[:last_brace + 1]
+                return json.loads(trimmed)
+        except json.JSONDecodeError:
+            pass
+
+        # 尝试修复截断的JSON
+        try:
+            # 计算花括号数量
+            open_count = candidate.count('{')
+            close_count = candidate.count('}')
+
+            if open_count > close_count:
+                # JSON被截断，尝试补全
+                missing_braces = open_count - close_count
+                fixed_candidate = candidate + '}' * missing_braces
+
+                # 尝试补全缺失的字段值
+                if fixed_candidate.rstrip().endswith(','):
+                    fixed_candidate = fixed_candidate.rstrip().rstrip(',') + '"'
+                elif fixed_candidate.rstrip().endswith('":'):
+                    fixed_candidate = fixed_candidate.rstrip() + ' ""'
+                elif fixed_candidate.rstrip().endswith('": '):
+                    fixed_candidate = fixed_candidate.rstrip() + '""'
+
+                return json.loads(fixed_candidate)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 最后尝试使用简单的启发式方法
+        try:
+            # 如果reason字段被截断，尝试补全
+            if '"reason":' in candidate and not '"mood":' in candidate:
+                # 简单的补全策略
+                lines = candidate.split('\n')
+                reason_line = None
+                for i, line in enumerate(lines):
+                    if '"reason":' in line:
+                        reason_line = i
+                        break
+
+                if reason_line is not None:
+                    # 截取到reason字段之前的内容，然后添加默认值
+                    before_reason = '\n'.join(lines[:reason_line])
+                    fixed_json = before_reason + '''
+  "reason": "策略分析",
+  "mood": "专注",
+  "target_name": null,
+  "target_name_2": null,
+  "speech": null,
+  "secret_message": null
+}'''
+                    return json.loads(fixed_json)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 如果以上都失败，尝试使用正则表达式提取关键字段
+        try:
+            action_match = re.search(r'"action"\s*:\s*"([^"]+)"', candidate)
+            amount_match = re.search(r'"amount"\s*:\s*(\d+)', candidate)
+
+            if action_match:
+                result = {
+                    "action": action_match.group(1),
+                    "amount": int(amount_match.group(1)) if amount_match else 0,
+                    "reason": "从截断内容中提取",
+                    "mood": "专注",
+                    "target_name": None,
+                    "target_name_2": None,
+                    "speech": None,
+                    "secret_message": None
+                }
+                return result
+        except (ValueError, AttributeError):
+            pass
+
+        # 最后的备选方案：尝试Python字面量解析
+        try:
+            python_like = re.sub(r'\bnull\b', 'None', candidate)
+            python_like = re.sub(r'\btrue\b', 'True', python_like)
+            python_like = re.sub(r'\bfalse\b', 'False', python_like)
+
             data = ast.literal_eval(python_like)
         except Exception:
             return None
@@ -357,8 +429,10 @@ class Player:
 
         used_aliases_str = "\n".join(used_aliases) if used_aliases else "无"
 
-        # 📌 [修复] 传递已使用的完整人设文本，让 AI 自己去理解和解析避免重复
-        prompt = template.format(self_name=self.name, used_aliases_str=used_aliases_str)
+        # 使用提示词管理器替换变量
+        prompt = prompt_manager.get_prompt('create_persona_prompt.txt',
+                                         self_name=self.name,
+                                         used_aliases_str=used_aliases_str)
         messages = [{"role": "user", "content": prompt}]
 
         try:
@@ -405,8 +479,8 @@ class Player:
                             opponent_reference_str: str,
                             public_event_log: str, # (新) 添加
                     prompt_template: str, # (新) 添加
-                    stream_start_cb: Callable[[str], Awaitable[None]],
-                    stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
+                    stream_start_cb: Callable[[str], Awaitable[None]] = None,
+                    stream_chunk_cb: Callable[[str], Awaitable[None]] = None) -> dict:
         """
         (已修改)
         极大增强 except 块的日志记录能力。
@@ -418,7 +492,8 @@ class Player:
             if not template:
                 raise RuntimeError("无法读取 Prompt 模板文件。")
 
-            prompt = template.format(
+            # 使用提示词管理器替换变量
+            prompt = prompt_manager.get_prompt('decide_action_prompt.txt',
                 self_name=self.name,
                 game_state_summary=game_state_summary,
                 my_hand=my_hand,
@@ -443,12 +518,27 @@ class Player:
             )
             messages = [{"role": "user", "content": prompt}]
 
-            await stream_start_cb(f"[{self.name} 思考中...]: ")
+            # 创建安全的stream_chunk_cb包装器
+            def safe_stream_chunk_cb(chunk: str):
+                if stream_chunk_cb:
+                    try:
+                        if asyncio.iscoroutinefunction(stream_chunk_cb):
+                            asyncio.create_task(stream_chunk_cb(chunk))
+                        else:
+                            stream_chunk_cb(chunk)
+                    except Exception as e:
+                        print(f"[警告] stream_chunk_cb 调用失败: {e}")
+
+            if stream_start_cb:
+                try:
+                    await stream_start_cb(f"[{self.name} 思考中...]: ")
+                except Exception as e:
+                    print(f"[警告] stream_start_cb 调用失败: {e}")
 
             full_content = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=stream_chunk_cb
+                stream_callback=safe_stream_chunk_cb
             )
             full_content_debug = full_content  # (新) 存储
 
@@ -581,11 +671,43 @@ class Player:
                 if detected_action:
                     break
 
+        # 尝试从文本中提取加注金额（针对RAISE动作）
+        detected_amount = 0
+        if detected_action == "RAISE" or any(kw in lowered for kw in ["加注", "raise", "增加", "加码"]):
+            # 寻找数字模式
+            amount_patterns = [
+                r'加注?\s*(\d+)',
+                r'增加?\s*(\d+)',
+                r'加码?\s*(\d+)',
+                r'下注?\s*(\d+)',
+                r'注\s*额?\s*(\d+)',
+                r'(\d+)\s*注',
+                r'(\d+)\s*筹码',
+                r'amount\s*[:：]?\s*(\d+)',
+                r'raise\s+(\d+)',
+                r'bet\s+(\d+)',
+            ]
+
+            for pattern in amount_patterns:
+                match = re.search(pattern, normalized, re.IGNORECASE)
+                if match:
+                    try:
+                        detected_amount = int(match.group(1))
+                        if detected_amount > 0:
+                            detected_action = "RAISE"
+                            break
+                    except ValueError:
+                        continue
+
+            # 如果找到加注意图但没有具体金额，使用默认值
+            if detected_action == "RAISE" and detected_amount == 0:
+                detected_amount = 50  # 默认加注金额
+
         if not detected_action:
             return None
 
-        # 仅当动作不需要额外信息时才返回，避免产生非法决策
-        if detected_action in {"RAISE", "COMPARE", "ACCUSE"}:
+        # 仅当动作没有足够信息时才返回None，但现在我们已经尝试提取了RAISE金额
+        if detected_action in {"COMPARE", "ACCUSE"}:
             return None
 
         if not detected_reason:
@@ -622,7 +744,7 @@ class Player:
 
         inferred_result = {
             "action": detected_action,
-            "amount": None,
+            "amount": detected_amount if detected_action == "RAISE" else None,
             "target_name": None,
             "target_name_2": None,
             "reason": reason,
@@ -641,15 +763,16 @@ class Player:
                      partner_name: str,
                      evidence_log: str,
                      my_persona: str,  # (新) 添加人设参数
-                     stream_start_cb: Callable[[str], Awaitable[None]],
-                     stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
+                     stream_start_cb: Callable[[str], Awaitable[None]] = None,
+                     stream_chunk_cb: Callable[[str], Awaitable[None]] = None) -> str:
 
         # template = self._read_file(DEFEND_PROMPT_PATH) # <-- [修复] 移除
         template = defend_prompt_template  # <-- [修复] 使用传入的模板
         if not template:
             return "我无话可说。"
 
-        prompt = template.format(
+        # 使用提示词管理器替换变量
+        prompt = prompt_manager.get_prompt('defend_prompt.txt',
             self_name=self.name,
             accuser_name=accuser_name,
             partner_name=partner_name,
@@ -658,17 +781,47 @@ class Player:
         )
         messages = [{"role": "user", "content": prompt}]
 
-        await stream_start_cb(f"【上帝(被告辩护)】: [{self.name}]: ")
+        # 创建安全的stream_chunk_cb包装器
+        def safe_stream_chunk_cb(chunk: str):
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        asyncio.create_task(stream_chunk_cb(chunk))
+                    else:
+                        stream_chunk_cb(chunk)
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
+
+        if stream_start_cb:
+            try:
+                await stream_start_cb(f"【上帝(被告辩护)】: [{self.name}]: ")
+            except Exception as e:
+                print(f"[警告] stream_start_cb 调用失败: {e}")
+
         try:
             full_defense = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=stream_chunk_cb
+                stream_callback=safe_stream_chunk_cb
             )
-            await stream_chunk_cb("\n")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb("\n")
+                    else:
+                        stream_chunk_cb("\n")
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
             return full_defense.strip().replace("\n", " ")
         except Exception as e:
-            await stream_chunk_cb(f"\n辩护时出错: {str(e)}\n")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb(f"\n辩护时出错: {str(e)}\n")
+                    else:
+                        stream_chunk_cb(f"\n辩护时出错: {str(e)}\n")
+                except Exception as cb_e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {cb_e}")
             return f"辩护时出错: {str(e)}"
 
     # (已修改)
@@ -694,7 +847,8 @@ class Player:
         if not previous_jury_reason:
             previous_jury_reason = "无前一位陪审团成员的意见"
 
-        prompt = template.format(
+        # 使用提示词管理器替换变量
+        prompt = prompt_manager.get_prompt('vote_prompt.txt',
             self_name=self.name,
             accuser_name=accuser_name,
             target_name_1=target_name_1,
@@ -708,7 +862,11 @@ class Player:
         messages = [{"role": "user", "content": prompt}]
 
         if stream_start_cb:
-            await stream_start_cb(f"【上帝(陪审团投票)】: [{self.name} 正在秘密投票...]: ")
+            try:
+                await stream_start_cb(f"【上帝(陪审团投票)】: [{self.name} 正在秘密投票...]: ")
+            except Exception as e:
+                print(f"[警告] stream_start_cb 调用失败: {e}")
+                # 出错时继续执行，不中断投票流程
 
         try:
             thinking_buffer = ""
@@ -716,7 +874,16 @@ class Player:
                 nonlocal thinking_buffer
                 thinking_buffer += chunk
                 if stream_chunk_cb:
-                    asyncio.create_task(stream_chunk_cb(chunk))
+                    try:
+                        # 检查stream_chunk_cb是否是异步函数
+                        if asyncio.iscoroutinefunction(stream_chunk_cb):
+                            asyncio.create_task(stream_chunk_cb(chunk))
+                        else:
+                            # 如果是同步函数，直接调用
+                            stream_chunk_cb(chunk)
+                    except Exception as e:
+                        print(f"[警告] stream_chunk_cb 调用失败: {e}")
+                        # 出错时静默处理，不影响主流程
 
             full_content = await self.llm_client.chat_stream(
                 messages,
@@ -751,7 +918,13 @@ class Player:
         except Exception as e:
             error_msg = f"投票时出错: {str(e)}"
             if stream_chunk_cb:
-                await stream_chunk_cb(f"\n{error_msg} (自动投: 无罪)\n")
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb(f"\n{error_msg} (自动投: 无罪)\n")
+                    else:
+                        stream_chunk_cb(f"\n{error_msg} (自动投: 无罪)\n")
+                except Exception as cb_e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {cb_e}")
             return {
                 "vote": "NOT_GUILTY",
                 "reason": error_msg,
@@ -768,13 +941,14 @@ class Player:
                            payment_method_string: str,
                            consequence_string: str,
                            # ↑↑ 添加完毕 ↑↑
-                           stream_start_cb: Callable[[str], Awaitable[None]],
-                           stream_chunk_cb: Callable[[str], Awaitable[None]]) -> dict:
+                           stream_start_cb: Callable[[str], Awaitable[None]] = None,
+                           stream_chunk_cb: Callable[[str], Awaitable[None]] = None) -> dict:
         """(新) 玩家决定是否贿赂"""
         if not bribe_prompt_template:
             return {"bribe": False, "reason": "系统错误：贿赂模板未加载"}
 
-        prompt = bribe_prompt_template.format(
+        # 使用提示词管理器替换变量
+        prompt = prompt_manager.get_prompt('bribe_prompt.txt',
             self_name=self.name,
             bribe_cost=bribe_cost,
             success_chance_percent=success_chance * 100.0,
@@ -787,14 +961,37 @@ class Player:
         )
         messages = [{"role": "user", "content": prompt}]
 
-        await stream_start_cb(f"【上帝(密谈)】: [{self.name} 正在紧急决策...]: ")
+        # 创建安全的stream_chunk_cb包装器
+        def safe_stream_chunk_cb(chunk: str):
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        asyncio.create_task(stream_chunk_cb(chunk))
+                    else:
+                        stream_chunk_cb(chunk)
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
+
+        if stream_start_cb:
+            try:
+                await stream_start_cb(f"【上帝(密谈)】: [{self.name} 正在紧急决策...]: ")
+            except Exception as e:
+                print(f"[警告] stream_start_cb 调用失败: {e}")
+
         try:
             full_content = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=stream_chunk_cb
+                stream_callback=safe_stream_chunk_cb
             )
-            await stream_chunk_cb("\n")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb("\n")
+                    else:
+                        stream_chunk_cb("\n")
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
 
             result = self._parse_first_valid_json(full_content)
             if result and "bribe" in result:
@@ -804,7 +1001,14 @@ class Player:
             return {"bribe": False, "reason": "JSON 解析失败或未提供 bribe 键"}
 
         except Exception as e:
-            await stream_chunk_cb(f"\n决策贿赂时出错: {str(e)}\n")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb(f"\n决策贿赂时出错: {str(e)}\n")
+                    else:
+                        stream_chunk_cb(f"\n决策贿赂时出错: {str(e)}\n")
+                except Exception as cb_e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {cb_e}")
             return {"bribe": False, "reason": f"决策时发生异常: {str(e)}"}
 
     # (已修改)
@@ -816,8 +1020,8 @@ class Player:
                       # (新) 添加 2 个参数
                       player_self_details: str,
                       opponent_name_list: str,
-                      stream_start_cb: Callable[[str], Awaitable[None]],
-                      stream_chunk_cb: Callable[[str], Awaitable[None]]) -> (str, dict):
+                      stream_start_cb: Callable[[str], Awaitable[None]] = None,
+                      stream_chunk_cb: Callable[[str], Awaitable[None]] = None) -> (str, dict):
         """
         (已修改)
         增强 reflect 的错误处理
@@ -829,7 +1033,8 @@ class Player:
             if not template:
                 raise RuntimeError("无法读取复盘 Prompt")
 
-            prompt = template.format(
+            # 使用提示词管理器替换变量
+            prompt = prompt_manager.get_prompt('reflect_prompt_template.txt',
                 self_name=self.name,
                 round_history=round_history,
                 round_result=round_result,
@@ -840,9 +1045,21 @@ class Player:
             )
             messages = [{"role": "user", "content": prompt}]
 
-            await stream_start_cb(f"【上帝(复盘中)】: [{self.name}]: ")
+            if stream_start_cb:
+                try:
+                    await stream_start_cb(f"【上帝(复盘中)】: [{self.name}]: ")
+                except Exception as e:
+                    print(f"[警告] stream_start_cb 调用失败: {e}")
 
-            await stream_chunk_cb("正在更新情报...")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb("正在更新情报...")
+                    else:
+                        stream_chunk_cb("正在更新情报...")
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
+
             full_content = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
@@ -857,7 +1074,14 @@ class Player:
             public_reflection = result.get("public_reflection", "...")
             private_impressions = result.get("private_impressions", {})
 
-            await stream_chunk_cb(f" (发言): {public_reflection}\n")
+            if stream_chunk_cb:
+                try:
+                    if asyncio.iscoroutinefunction(stream_chunk_cb):
+                        await stream_chunk_cb(f" (发言): {public_reflection}\n")
+                    else:
+                        stream_chunk_cb(f" (发言): {public_reflection}\n")
+                except Exception as e:
+                    print(f"[警告] stream_chunk_cb 调用失败: {e}")
             return public_reflection, private_impressions
 
         except Exception as e:
