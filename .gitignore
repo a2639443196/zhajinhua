@@ -1,6 +1,10 @@
+logs/
+.idea/
+__pycache__/
+.git/
+venv/
 config_local.py
 misc.xml
 vcs.xml
 zhajinhua.iml
 used_personas.json
-logs/
