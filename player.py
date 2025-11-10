@@ -681,13 +681,18 @@ class Player:
                    defense_speech_1: str,
                    defense_speech_2: str,
                    my_persona: str,  # (新) 添加人设参数
-                   stream_start_cb: Callable[[str], Awaitable[None]],
-                   stream_chunk_cb: Callable[[str], Awaitable[None]]) -> str:
+                   previous_jury_reason: str = "",  # (新增) 前一位陪审团成员的理由
+                   stream_start_cb: Callable[[str], Awaitable[None]] = None,
+                   stream_chunk_cb: Callable[[str], Awaitable[None]] = None) -> dict:
 
         # template = self._read_file(VOTE_PROMPT_PATH) # <-- [修复] 移除
         template = vote_prompt_template  # <-- [修复] 使用传入的模板
         if not template:
-            return "NOT_GUILTY"
+            return {"vote": "NOT_GUILTY", "reason": "模板错误", "thinking_process": ""}
+
+        # 处理前一位陪审团理由的显示
+        if not previous_jury_reason:
+            previous_jury_reason = "无前一位陪审团成员的意见"
 
         prompt = template.format(
             self_name=self.name,
@@ -697,17 +702,26 @@ class Player:
             evidence_log=evidence_log,
             defense_speech_1=defense_speech_1,
             defense_speech_2=defense_speech_2,
-            my_persona=my_persona  # (新) 添加人设
+            my_persona=my_persona,  # (新) 添加人设
+            previous_jury_reason=previous_jury_reason  # (新增) 前一位陪审团理由
         )
         messages = [{"role": "user", "content": prompt}]
 
-        await stream_start_cb(f"【上帝(陪审团投票)】: [{self.name} 正在秘密投票...]: ")
+        if stream_start_cb:
+            await stream_start_cb(f"【上帝(陪审团投票)】: [{self.name} 正在秘密投票...]: ")
 
         try:
+            thinking_buffer = ""
+            def collect_thinking(chunk: str):
+                nonlocal thinking_buffer
+                thinking_buffer += chunk
+                if stream_chunk_cb:
+                    asyncio.create_task(stream_chunk_cb(chunk))
+
             full_content = await self.llm_client.chat_stream(
                 messages,
                 model=self.model_name,
-                stream_callback=lambda s: asyncio.sleep(0.001)
+                stream_callback=collect_thinking
             )
 
             json_match = re.search(r'```json\s*({[\s\S]*?})\s*```|\s*({[\s\S]*})', full_content)
@@ -715,16 +729,35 @@ class Player:
                 json_str = json_match.group(1) or json_match.group(2)
                 result = json.loads(json_str)
                 vote = result.get("vote", "NOT_GUILTY").upper()
-                if vote == "GUILTY":
-                    await stream_chunk_cb(" (已投: 有罪)\n")
-                    return "GUILTY"
+                thinking_process = result.get("thinking_process", "")
+                reason = result.get("reason", "分析过程出错")
 
-            await stream_chunk_cb(" (已投: 无罪)\n")
-            return "NOT_GUILTY"
+                # 确保返回完整的投票信息
+                return {
+                    "vote": vote,
+                    "reason": reason,
+                    "thinking_process": thinking_process,
+                    "full_response": full_content
+                }
+
+            # 如果解析失败，返回默认值
+            return {
+                "vote": "NOT_GUILTY",
+                "reason": "投票解析失败",
+                "thinking_process": "无法解析AI回复",
+                "full_response": full_content
+            }
 
         except Exception as e:
-            await stream_chunk_cb(f"\n投票时出错: {str(e)} (自动投: 无罪)\n")
-            return "NOT_GUILTY"
+            error_msg = f"投票时出错: {str(e)}"
+            if stream_chunk_cb:
+                await stream_chunk_cb(f"\n{error_msg} (自动投: 无罪)\n")
+            return {
+                "vote": "NOT_GUILTY",
+                "reason": error_msg,
+                "thinking_process": "系统错误",
+                "full_response": ""
+            }
 
     async def decide_bribe(self,
                            bribe_prompt_template: str,

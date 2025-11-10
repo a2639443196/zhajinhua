@@ -2001,14 +2001,13 @@ class GameController:
 
         while self.get_alive_player_count() > 1:
             self.hand_count += 1
-        
-        # (新) 清理超过2手牌的历史记录，避免内存无限增长
-        # 清理旧的密信、作弊记录和事件日志
-        if self.hand_count > 2:
-            cutoff_hand = self.hand_count - 2
-            self.secret_message_log = [(h, s, r, m) for h, s, r, m in self.secret_message_log if h >= cutoff_hand]
-            self.cheat_action_log = [(h, a, t, p) for h, a, t, p in self.cheat_action_log if h >= cutoff_hand]
-            self.public_event_log = [e for e in self.public_event_log if e.get('hand', 0) >= cutoff_hand]
+
+            # (新增) 每手牌开局时清除所有之前的日志记录
+            self.secret_message_log.clear()
+            self.cheat_action_log.clear()
+            self.public_event_log.clear()
+
+            await self.god_print(f"=== 第 {self.hand_count} 手牌开始 ===", 1)
 
             # --- [起始玩家修复]：确保第一手牌从 P0 (索引 0) 开始 ---
             if self.hand_count == 1:
@@ -2084,13 +2083,13 @@ class GameController:
             display_pot = display_base + delta
         # (↑↑ 新增结束 ↑↑)
 
-        # (新) 只保留最近2手牌的事件日志
-        recent_events = [e for e in self.public_event_log if e.get('hand', 0) >= max(1, self.hand_count - 1)]
+        # (修改) 只显示当前手牌的事件日志
+        current_events = [e for e in self.public_event_log if e.get('hand', 0) == self.hand_count]
         public_event_log_str = "\n".join(
-            [f"  - [第{e['hand']}手] {e['type']} by {e['player_name']}: {e['details']}" for e in recent_events]
+            [f"  - {e['type']} by {e['player_name']}: {e['details']}" for e in current_events]
         )
         if not public_event_log_str:
-            public_event_log_str = "无"
+            public_event_log_str = "当前手牌无事件记录"
 
         state_summary_lines = [
             f"当前是 {self.players[st.current_player].name} 的回合。",
@@ -2250,9 +2249,9 @@ class GameController:
         observed_moods_str = "\n".join(mood_lines) if mood_lines else "暂未观察到对手的明显情绪。"
 
         secret_message_lines = []
-        # (新) 只保留最近2手牌的密信
+        # (修改) 只保留当前手牌的密信
         for (hand_num, sender, recipient, message) in self.secret_message_log:
-            if hand_num >= max(1, self.hand_count - 1) and recipient == player_id:
+            if hand_num == self.hand_count and recipient == player_id:
                 sender_name = self.players[sender].name
                 secret_message_lines.append(f"  - [密信] 来自 {sender_name}: {message}")
         for message in self.player_system_messages.get(player_id, []):
@@ -3717,23 +3716,23 @@ class GameController:
 
         evidence_log_entries = []
         accused_ids = [target_id_1] + ([target_id_2] if isinstance(target_id_2, int) else [])
-        # (新) 只保留最近2手牌的密信作为证据
+        # (修改) 只保留当前手牌的密信作为证据
         for (hand_num, sender, recipient, message) in self.secret_message_log:
-            if hand_num >= max(1, self.hand_count - 1) and ((sender in accused_ids) or (recipient in accused_ids)):
+            if hand_num == self.hand_count and ((sender in accused_ids) or (recipient in accused_ids)):
                 sender_name = self.players[sender].name
                 recipient_name = self.players[recipient].name
-                log = f"  - [H{hand_num}] {sender_name} -> {recipient_name}: {message}"
+                log = f"  - {sender_name} -> {recipient_name}: {message}"
                 evidence_log_entries.append(log)
                 await self.god_print(log, 0.5)
 
-        # (新) 只保留最近2手牌的作弊记录作为证据
+        # (修改) 只保留当前手牌的作弊记录作为证据
         for (hand_num, actor_id, cheat_type, payload) in self.cheat_action_log:
-            if hand_num >= max(1, self.hand_count - 1) and actor_id in accused_ids:
+            if hand_num == self.hand_count and actor_id in accused_ids:
                 actor_name = self.players[actor_id].name
                 status = "成功" if payload.get("success") else "失败"
                 detail = payload.get(
                     "error") or f"第 {payload.get('card_index')} 张: {payload.get('from')} -> {payload.get('to')}"
-                log = f"  - [H{hand_num}] {actor_name} 试图使用非法动作 {cheat_type} ({status}): {detail}"
+                log = f"  - {actor_name} 试图使用非法动作 {cheat_type} ({status}): {detail}"
                 evidence_log_entries.append(log)
                 await self.god_print(log, 0.5)
 
@@ -3770,30 +3769,54 @@ class GameController:
 
         await self.god_print(f"--- 审判阶段 3: 陪审团投票 ---", 1)
 
-        vote_tasks = []
-        for jury_id in jury_list:
+        vote_results = []
+        previous_jury_reason = ""
+
+        # (修改) 陪审团顺序投票，实现理由传递机制
+        for i, jury_id in enumerate(jury_list):
             # (新) 获取陪审团成员的人设信息
             jury_persona = self.player_personas.get(jury_id, f"我是 {self.players[jury_id].name}")
-            vote_tasks.append(
-                self.players[jury_id].vote(
-                    self.prompt_templates.get("vote", ""),  # <-- [修复] 传入模板
-                    accuser_name, target_name_1, target_name_2,
-                    evidence_log_str, defense_speech_1, defense_speech_2,
-                    jury_persona,  # (新) 传入人设
-                    self.god_stream_start, self.god_stream_chunk
-                )
+
+            await self.god_print(f"陪审团 {self.players[jury_id].name} 开始投票 (思考中)...", 1)
+
+            # (修改) 传递前一位陪审团成员的理由
+            vote_result = await self.players[jury_id].vote(
+                self.prompt_templates.get("vote", ""),
+                accuser_name, target_name_1, target_name_2,
+                evidence_log_str, defense_speech_1, defense_speech_2,
+                jury_persona,
+                previous_jury_reason,  # (新增) 传递前一位陪审团的理由
+                self.god_stream_start, self.god_stream_chunk
             )
 
-        votes = await asyncio.gather(*vote_tasks)
-        await asyncio.sleep(1)
+            vote_results.append(vote_result)
+
+            # (新增) 显示陪审团的思考过程和理由
+            if vote_result.get("thinking_process"):
+                await self.god_print(f"【{self.players[jury_id].name} 的思考过程】:", 0.5)
+                # 分段显示思考过程，避免一次性输出太多
+                thinking = vote_result["thinking_process"]
+                sentences = thinking.split("。")
+                for sentence in sentences:
+                    if sentence.strip():
+                        await self.god_print(f"  {sentence.strip()}。", 0.3)
+                await asyncio.sleep(1)
+
+            # 更新前一位陪审团的理由，传递给下一位
+            if vote_result.get("reason"):
+                previous_jury_reason = f"{self.players[jury_id].name} 的投票理由: {vote_result['reason']}"
+                await self.god_print(f"【{self.players[jury_id].name} 的投票理由】: {vote_result['reason']}", 1)
+
+            await asyncio.sleep(2)  # 给每个陪审团成员足够的思考时间
 
         await self.god_print(f"--- 审判阶段 4: 裁决 ---", 1)
 
         all_guilty = True
         for i, jury_id in enumerate(jury_list):
-            vote_result = "有罪" if votes[i] == "GUILTY" else "无罪"
-            await self.god_print(f"陪审团 {self.players[jury_id].name} 投票: {vote_result}", 1)
-            if votes[i] != "GUILTY":
+            vote = vote_results[i].get("vote", "NOT_GUILTY")
+            vote_result_text = "有罪" if vote == "GUILTY" else "无罪"
+            await self.god_print(f"陪审团 {self.players[jury_id].name} 投票: {vote_result_text}", 1)
+            if vote != "GUILTY":
                 all_guilty = False
 
         await asyncio.sleep(2)
