@@ -371,30 +371,49 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 if __name__ == "__main__":
-    # (新) 定义人设文件路径和行数限制
+    # (新) 定义人设文件路径和条目数限制 'n'
     BASE_DIR = Path(__file__).parent.resolve()
     PERSONA_FILE_PATH = BASE_DIR / "used_personas.json"
-    LINE_LIMIT = 300  # 你期望的N行
+    ITEM_LIMIT = player_configs.__len__() * 9  # <--- 这是 n (条目数)
 
-    # (新) 检测人设文件内容是否超过N行，超过则清空
     try:
         if PERSONA_FILE_PATH.exists():
-            # 读取文件并计算行数
+            # (新) 读取文件内容
             with PERSONA_FILE_PATH.open("r", encoding="utf-8") as f:
-                lines = f.readlines()
+                content = f.read().strip()
 
-            if len(lines) > LINE_LIMIT:
-                print(f"【系统】: 人设文件 '{PERSONA_FILE_PATH.name}' (共 {len(lines)} 行) 超过 {LINE_LIMIT} 行限制，正在清空...")
+            item_count = 0
+            if content:
+                # (新) 解析 JSON 并获取条目数 (长度)
+                data = json.loads(content)
+                if isinstance(data, list):
+                    item_count = len(data)
+                else:
+                    print(f"【系统】: 警告：人设文件 '{PERSONA_FILE_PATH.name}' 格式非列表，将按 0 条处理。")
 
-                # 清空文件并写入一个空的 JSON 列表 "[]"
-                # 这确保了 GameController 在读取时不会因空文件而报错
+            # (新) 检查条目数是否 > n
+            if item_count > ITEM_LIMIT:
+                print(f"【系统】: 人设文件 '{PERSONA_FILE_PATH.name}' (共 {item_count} 条) 超过 {ITEM_LIMIT} 条限制，正在清空...")
+
+                # 重置为空列表 "[]"，以确保 game_controller 能正确解析
                 with PERSONA_FILE_PATH.open("w", encoding="utf-8") as f:
                     f.write("[]")
 
                 print(f"【系统】: 人设文件已清空。")
+
         else:
-            # 文件不存在，GameController 内部有处理逻辑，此处无需操作
+            # 文件不存在，GameController 会自动处理，无需操作
             pass
+
+    except json.JSONDecodeError:
+        # (新) 处理文件损坏或内容非法的情况
+        print(f"【系统】: !! 人设文件 '{PERSONA_FILE_PATH.name}' 格式错误 (非JSON)，正在清空...")
+        try:
+            with PERSONA_FILE_PATH.open("w", encoding="utf-8") as f:
+                f.write("[]")
+            print(f"【系统】: 人设文件已清空。")
+        except Exception as write_e:
+            print(f"【系统】: !! 清空损坏的人设文件时失败: {write_e} !!")
 
     except Exception as e:
         print(f"【系统】: !! 启动时检测人设文件出错: {e} !!")
